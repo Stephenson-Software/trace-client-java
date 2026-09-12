@@ -1,5 +1,5 @@
 /*
- * trace-client 0.1.0 -- https://github.com/Stephenson-Software/trace-client-java
+ * trace-client 0.1.1 -- https://github.com/Stephenson-Software/trace-client-java
  *
  * One call to report that a program was used. Copy this file into a project as
  * is, or depend on the artifact; either way there is nothing else to add.
@@ -134,18 +134,25 @@ public final class TraceClient {
     }
 
     /**
-     * Stops the sending thread. Reports already queued are dropped; one in
-     * flight is given a moment to finish. Safe to call more than once, and on
-     * a disabled client.
+     * Stops the sending thread, giving reports already queued up to
+     * {@value #READ_TIMEOUT_MS} ms in total to be sent first. A program that
+     * reports and then exits within milliseconds -- a CLI -- would otherwise
+     * lose its one event to the race between queueing it and the thread
+     * picking it up. The bound still holds: an unreachable server delays exit
+     * by at most the timeout, never a hang; whatever has not been sent by
+     * then is dropped. Safe to call more than once, and on a disabled client.
      */
     public void close() {
         if (executor == null) {
             return;
         }
-        executor.shutdownNow();
+        executor.shutdown(); // no new work; queued reports still run
         try {
-            executor.awaitTermination(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            if (!executor.awaitTermination(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow();
+            }
         } catch (InterruptedException interrupted) {
+            executor.shutdownNow();
             Thread.currentThread().interrupt();
         }
     }
@@ -159,7 +166,7 @@ public final class TraceClient {
             connection.setRequestMethod("POST");
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             connection.setRequestProperty("Authorization", "Bearer " + key);
-            connection.setRequestProperty("User-Agent", "trace-client/0.1.0 (" + application + ")");
+            connection.setRequestProperty("User-Agent", "trace-client/0.1.1 (" + application + ")");
             connection.setDoOutput(true);
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(bytes.length);

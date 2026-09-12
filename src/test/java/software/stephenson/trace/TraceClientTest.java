@@ -298,6 +298,41 @@ class TraceClientTest {
         slow.stop(0);
     }
 
+    @Test
+    void close_sendsWhatWasJustQueuedBeforeStopping() throws Exception {
+        // A CLI reports once and exits at once. Without draining, the event
+        // races the sender thread and is lost a good fraction of the time; 30
+        // back-to-back report()+close() pairs make that fraction visible.
+        for (int i = 0; i < 30; i++) {
+            TraceClient client = TraceClient.builder(baseUrl(), "MyCli").key("k").build();
+            client.report("startup", null, Collections.singletonMap("run", String.valueOf(i)));
+            client.close();
+        }
+        assertEquals(30, received.size(), "every report()+close() pair must deliver");
+    }
+
+    @Test
+    void close_stillReturnsWithinTheTimeoutWhenTheServerHangs() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        HttpServer slow = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        slow.createContext("/", exchange -> {
+            try { release.await(15, TimeUnit.SECONDS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            exchange.sendResponseHeaders(201, -1);
+            exchange.close();
+        });
+        slow.start();
+        TraceClient client = TraceClient.builder("http://127.0.0.1:" + slow.getAddress().getPort(), "MyCli").key("k").build();
+        client.report("startup");
+
+        long before = System.nanoTime();
+        client.close();
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+
+        assertTrue(elapsedMs < 7_000, "close() took " + elapsedMs + " ms; draining must be bounded by the timeout");
+        release.countDown();
+        slow.stop(0);
+    }
+
     private static byte[] readAll(InputStream in) throws java.io.IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buffer = new byte[1024];

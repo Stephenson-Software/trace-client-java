@@ -28,6 +28,7 @@ trace.close();
 | **Returns immediately** | The HTTP call runs on one daemon thread the client owns. A Spigot plugin can report from the server thread and no tick waits on the network. |
 | **Never throws** | A server that is down, slow, or rejecting the key is a dropped report, not an exception in your program. Drops are logged at `FINE` if you gave a logger, otherwise not at all. |
 | **Bounded** | At most 256 reports wait to be sent; past that, new ones are dropped. A trace server that is unreachable for a week costs a few kilobytes, not your heap. |
+| **`close()` drains** | Reports already queued get up to the client timeout (5 s total) to be sent before the thread stops, so a CLI that reports and exits at once does not lose its event. Still bounded: an unreachable server delays exit by at most the timeout. |
 
 Reporting is **opt-out**: `enabled(false)`, or no key at all, yields a client
 that does nothing and costs nothing. A program that runs on other people's
@@ -53,7 +54,7 @@ plugins already vendor bStats' `Metrics.java`.
 <dependency>
     <groupId>com.github.Stephenson-Software</groupId>
     <artifactId>trace-client-java</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.1</version>
 </dependency>
 ```
 
