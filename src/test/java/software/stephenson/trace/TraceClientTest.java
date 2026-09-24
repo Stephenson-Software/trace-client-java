@@ -52,13 +52,15 @@ class TraceClientTest {
         final String path;
         final String authorization;
         final String contentType;
+        final String userAgent;
         final String body;
 
-        Received(String method, String path, String authorization, String contentType, String body) {
+        Received(String method, String path, String authorization, String contentType, String userAgent, String body) {
             this.method = method;
             this.path = path;
             this.authorization = authorization;
             this.contentType = contentType;
+            this.userAgent = userAgent;
             this.body = body;
         }
     }
@@ -84,6 +86,7 @@ class TraceClientTest {
                     exchange.getRequestURI().getPath(),
                     exchange.getRequestHeaders().getFirst("Authorization"),
                     exchange.getRequestHeaders().getFirst("Content-Type"),
+                    exchange.getRequestHeaders().getFirst("User-Agent"),
                     new String(body, StandardCharsets.UTF_8)));
             exchange.sendResponseHeaders(replyStatus, -1);
             exchange.close();
@@ -274,6 +277,63 @@ class TraceClientTest {
     }
 
     @Test
+    void json_dropsInfiniteValuesAndKeepsFiniteOnes() {
+        // Arrange + Act
+        String positive = TraceClient.json("App", "n", Double.POSITIVE_INFINITY, null);
+        String negative = TraceClient.json("App", "n", Double.NEGATIVE_INFINITY, null);
+        String finite = TraceClient.json("App", "n", -0.5, null);
+
+        // Assert
+        assertEquals("{\"application\":\"App\",\"name\":\"n\"}", positive, "Infinity is not JSON and is dropped");
+        assertEquals("{\"application\":\"App\",\"name\":\"n\"}", negative, "-Infinity is not JSON and is dropped");
+        assertEquals("{\"application\":\"App\",\"name\":\"n\",\"value\":-0.5}", finite);
+    }
+
+    @Test
+    void json_omitsTagsWhenNullOrEmpty() {
+        // Arrange + Act
+        String nullTags = TraceClient.json("App", "n", null, null);
+        String emptyTags = TraceClient.json("App", "n", null, Collections.<String, String>emptyMap());
+
+        // Assert
+        assertEquals("{\"application\":\"App\",\"name\":\"n\"}", nullTags);
+        assertEquals("{\"application\":\"App\",\"name\":\"n\"}", emptyTags);
+    }
+
+    @Test
+    void json_writesAnEmptyTagsObjectWhenEveryTagIsSkipped() {
+        // Characterizes current behaviour: a map that is non-empty but holds
+        // only null keys or values still produces a "tags" key, with nothing
+        // in it. Valid JSON either way.
+        // Arrange
+        Map<String, String> tags = new LinkedHashMap<>();
+        tags.put("nullValue", null);
+        tags.put(null, "nullKey");
+
+        // Act
+        String json = TraceClient.json("App", "n", null, tags);
+
+        // Assert
+        assertEquals("{\"application\":\"App\",\"name\":\"n\",\"tags\":{}}", json);
+    }
+
+    @Test
+    void quote_escapesCarriageReturnAndEveryOtherControlCharacter() {
+        assertEquals("\"a\\rb\"", TraceClient.quote("a\rb"));
+        assertEquals("\"\\u0000\"", TraceClient.quote("\u0000"));
+        assertEquals("\"\\u0008\"", TraceClient.quote("\b"));
+        assertEquals("\"\\u000c\"", TraceClient.quote("\f"));
+        assertEquals("\"\\u001f\"", TraceClient.quote("\u001f"));
+        assertEquals("\"\"", TraceClient.quote(""));
+    }
+
+    @Test
+    void quote_passesPrintableAndNonAsciiCharactersThrough() {
+        // Only what JSON requires is escaped; the body is sent as UTF-8.
+        assertEquals("\" /é€\u007f\"", TraceClient.quote(" /é€\u007f"));
+    }
+
+    @Test
     void queue_isBoundedAndDropsRatherThanGrows() throws Exception {
         // Arrange
         // Hold the sending thread on the first report so everything behind it
@@ -354,6 +414,89 @@ class TraceClientTest {
         assertTrue(elapsedMs < 7_000, "close() took " + elapsedMs + " ms; draining must be bounded by the timeout");
         release.countDown();
         slow.stop(0);
+    }
+
+    @Test
+    void close_isSafeToCallTwice() throws Exception {
+        // Arrange
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin").key("k").build();
+        client.report("startup");
+
+        // Act
+        client.close();
+
+        // Assert
+        assertDoesNotThrow(client::close);
+        assertEquals(1, received.size(), "the report queued before the first close() is delivered once");
+    }
+
+    @Test
+    void report_afterCloseIsDroppedWithoutThrowing() throws Exception {
+        // Arrange
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin").key("k").build();
+        client.close();
+
+        // Act
+        assertDoesNotThrow(() -> client.report("late"));
+
+        // Assert
+        assertFalse(arrived.await(300, TimeUnit.MILLISECONDS), "nothing should be sent after close()");
+        assertTrue(received.isEmpty());
+    }
+
+    @Test
+    void report_sendsAUserAgentNamingTheClientAndTheApplication() throws Exception {
+        // Arrange
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin").key("k").build();
+
+        // Act
+        client.report("startup");
+
+        // Assert
+        assertTrue(arrived.await(5, TimeUnit.SECONDS));
+        String userAgent = received.get(0).userAgent;
+        assertTrue(userAgent != null && userAgent.matches("trace-client/\\d+\\.\\d+\\.\\d+ \\(MyPlugin\\)"),
+                "unexpected User-Agent: " + userAgent);
+        client.close();
+    }
+
+    @Test
+    void report_logsASuccessStatusOtherThan201() throws Exception {
+        // Arrange
+        // The server answers 201 Created; any other status, even a 2xx, is
+        // worth a FINE line because it means the endpoint is not what the
+        // client expects.
+        replyStatus = 200;
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.status200");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin").key("k").logger(logger).build();
+
+        // Act
+        assertDoesNotThrow(() -> client.report("startup"));
+
+        // Assert
+        assertTrue(log.await(5, TimeUnit.SECONDS));
+        assertEquals(Level.FINE, log.records.get(0).getLevel());
+        assertTrue(log.records.get(0).getMessage().startsWith("[trace] trace server answered 200"),
+                log.records.get(0).getMessage());
+        client.close();
+    }
+
+    @Test
+    void builder_trimsTheBaseUrlAndApplicationAndDropsEveryTrailingSlash() throws Exception {
+        // Arrange
+        TraceClient client = TraceClient.builder("  " + baseUrl() + "///  ", "  MyPlugin  ").key("k").build();
+
+        // Act
+        client.report("startup");
+
+        // Assert
+        assertTrue(arrived.await(5, TimeUnit.SECONDS));
+        assertEquals("/api/metrics", received.get(0).path);
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"startup\"}", received.get(0).body);
+        client.close();
     }
 
     @Test
