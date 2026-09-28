@@ -51,7 +51,7 @@ last word. `build()` checks these in order; the first match wins and is what
 | Switch | `disabledReason()` |
 |---|---|
 | Environment: `TRACE_USAGE_REPORTING=off` (or `false`, `0`, `no`) or `DO_NOT_TRACK=1` (or `true`, `yes`), case-insensitive. Always checked. | `environment` |
-| Server-wide, when `serverWideConfig(pluginsDirectory)` was given: `enabled: false` in `plugins/trace/config.yml`. `build()` creates the file with `enabled: true` if it is missing and never rewrites it afterwards; it is read with a line regex, no YAML library. An IO failure is logged at `FINE` and counts as enabled. | `server-wide config: plugins/trace/config.yml` |
+| Server-wide, when `serverWideConfig(pluginsDirectory)` was given: `enabled: false` in `plugins/trace/config.yml`. `build()` creates the file with `enabled: true` (and a commented-out [`tags:`](#server-wide-tags) example) if it is missing and never rewrites it afterwards; it is read with a line regex, no YAML library. An IO failure is logged at `FINE` and counts as enabled. | `server-wide config: plugins/trace/config.yml` |
 | The program's own setting: `enabled(false)`. | `config.yml` |
 | No key, or a blank one. | `no key` |
 
@@ -61,6 +61,37 @@ should expose its own switch in its configuration and print, on every
 startup, whether reporting is on and how to turn it off — see the example
 above and the [usage reporting](https://github.com/Stephenson-Software/trace#usage-reporting)
 page for the wording the fleet uses.
+
+## Server-wide tags
+
+The same `plugins/trace/config.yml` can carry a `tags:` block. Every event
+every plugin on that server reports gets these tags added — the way a test or
+CI server marks itself so its events are left out of real-installation
+figures (the trace server's public numbers exclude `ci`, `service` and `page`):
+
+```yaml
+enabled: true
+tags:
+  ci: "true"
+```
+
+- `tags:` starts at column 0 and is followed by indented `key: value` lines.
+  Values may be double-quoted, single-quoted or bare; blank lines and `#`
+  comments inside the block are skipped. The block ends at the next line that
+  is not indented, or at the end of the file.
+- An event's own tag always wins: a server-wide `version` never overwrites the
+  `version` a plugin sends.
+- Entries the trace server would reject are dropped one by one, never the
+  whole report: keys must match `[A-Za-z0-9][A-Za-z0-9_.-]*`, keys and values
+  are at most 255 characters, and server-wide tags stop being added once an
+  event carries 32 tags in total. Anything the line reader does not
+  understand (flow maps, lists, block scalars, a quote never closed) is
+  dropped the same way; a malformed file never throws and never turns
+  reporting off.
+- The tags are read once, in `build()`, together with `enabled:`.
+  `enabled: false` still wins — a disabled client sends nothing, tags or not.
+- A file created by `build()` has the example above commented out, so nothing
+  is added until the operator uncomments it.
 
 ## Getting it
 
@@ -82,7 +113,7 @@ plugins already vendor bStats' `Metrics.java`.
 <dependency>
     <groupId>com.github.Stephenson-Software</groupId>
     <artifactId>trace-client-java</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
