@@ -13,6 +13,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -525,7 +526,13 @@ class TraceClientTest {
                 + "# Set enabled to false and every such plugin on this server stops reporting,\n"
                 + "# regardless of its own usage-reporting.enabled setting. Plugins never turn\n"
                 + "# this back on.\n"
-                + "enabled: true\n";
+                + "enabled: true\n"
+                + "#\n"
+                + "# Tags added to every event such plugins on this server report. A plugin's\n"
+                + "# own tag of the same name wins. On a test or CI server, uncomment the two\n"
+                + "# lines below so its events are left out of real-installation figures.\n"
+                + "# tags:\n"
+                + "#   ci: \"true\"\n";
         assertEquals(expected, new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
         assertTrue(client.isEnabled(), "a freshly created switch file means enabled");
         assertNull(client.disabledReason());
@@ -580,7 +587,7 @@ class TraceClientTest {
         // The file says on; the environment says off. The environment wins,
         // and is the reason given.
         TraceClient.builder(baseUrl(), "MyPlugin").key("k").serverWideConfig(plugins.toFile()).build().close();
-        assertEquals("enabled: true\n", lastLine(plugins.resolve("trace").resolve("config.yml")));
+        assertTrue(Files.readAllLines(plugins.resolve("trace").resolve("config.yml"), StandardCharsets.UTF_8).contains("enabled: true"));
 
         for (String off : new String[] {"off", "OFF", "false", "0", "no", " No "}) {
             environment.clear();
@@ -636,6 +643,236 @@ class TraceClientTest {
     }
 
     @Test
+    void serverWideTags_areMergedIntoEveryEvent(@TempDir Path plugins) throws Exception {
+        // Arrange
+        writeServerWideConfig(plugins, "enabled: true\ntags:\n  ci: \"true\"\n");
+        Map<String, String> tags = new LinkedHashMap<>();
+        tags.put("version", "1.2.3");
+
+        // Act
+        String body = reportedBody(plugins, "startup", tags);
+
+        // Assert
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"startup\",\"tags\":{\"version\":\"1.2.3\",\"ci\":\"true\"}}", body);
+    }
+
+    @Test
+    void serverWideTags_areAddedToAnEventWithNoTagsOfItsOwn(@TempDir Path plugins) throws Exception {
+        writeServerWideConfig(plugins, "tags:\n  ci: \"true\"\n");
+
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"startup\",\"tags\":{\"ci\":\"true\"}}",
+                reportedBody(plugins, "startup", null));
+    }
+
+    @Test
+    void serverWideTags_neverOverwriteTheEventsOwnTag(@TempDir Path plugins) throws Exception {
+        // Arrange
+        writeServerWideConfig(plugins, "tags:\n  version: \"9.9.9\"\n  name: overwritten\n  ci: true\n");
+        Map<String, String> tags = new LinkedHashMap<>();
+        tags.put("version", "1.2.3");
+        tags.put("name", "home");
+
+        // Act
+        String body = reportedBody(plugins, "command", tags);
+
+        // Assert
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"command\",\"tags\":"
+                + "{\"version\":\"1.2.3\",\"name\":\"home\",\"ci\":\"true\"}}", body);
+    }
+
+    @Test
+    void serverWideTags_acceptDoubleQuotedSingleQuotedAndBareValues() {
+        Map<String, String> tags = tagsOf("tags:\n"
+                + "  a: \"double \\\"quoted\\\" # not a comment\"\n"
+                + "  b: 'single ''quoted'''\n"
+                + "  c: bare value   # a comment\n"
+                + "  d: true\n"
+                + "  e: \"\"\n"
+                + "  'f': \"quoted key\"\n"
+                + "  g: \"x\"  # comment after a quote\n");
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("a", "double \"quoted\" # not a comment");
+        expected.put("b", "single 'quoted'");
+        expected.put("c", "bare value");
+        expected.put("d", "true");
+        expected.put("e", "");
+        expected.put("f", "quoted key");
+        expected.put("g", "x");
+        assertEquals(expected, tags);
+    }
+
+    @Test
+    void serverWideTags_skipBlankAndCommentLinesInsideTheBlock() {
+        Map<String, String> tags = tagsOf("tags:   # server-wide\n"
+                + "\n"
+                + "  # the CI marker\n"
+                + "# a comment at column 0 does not end the block either\n"
+                + "  ci: \"true\"\n"
+                + "   \n"
+                + "  env: staging\n");
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("ci", "true");
+        expected.put("env", "staging");
+        assertEquals(expected, tags);
+    }
+
+    @Test
+    void serverWideTags_blockEndsAtTheNextUnindentedLineOrEndOfFile() {
+        // Ends at the next key.
+        TraceClient.ServerWideConfig config = TraceClient.parseServerWideConfig(Arrays.asList(
+                "tags:", "  ci: \"true\"", "enabled: false", "  stray: x"));
+        assertEquals(Collections.singletonMap("ci", "true"), config.tags);
+        assertTrue(config.disables, "the enabled: line after the block is still the switch");
+
+        // Ends at end of file, with no trailing newline.
+        assertEquals(Collections.singletonMap("ci", "true"), tagsOf("enabled: true\ntags:\n  ci: \"true\""));
+
+        // An enabled: entry inside the block is a tag, not the switch.
+        config = TraceClient.parseServerWideConfig(Arrays.asList("tags:", "  enabled: \"false\""));
+        assertFalse(config.disables);
+        assertEquals(Collections.singletonMap("enabled", "false"), config.tags);
+
+        // Deeper-indented lines are not entries of this block.
+        assertEquals(Collections.singletonMap("ci", "true"), tagsOf("tags:\n  ci: \"true\"\n    nested: x\n"));
+
+        // "tags:" must be at column 0, and an empty block is no tags.
+        assertTrue(tagsOf("other:\n  tags:\n    ci: \"true\"\n").isEmpty());
+        assertTrue(tagsOf("tags:\nenabled: true\n").isEmpty());
+    }
+
+    @Test
+    void serverWideTags_dropEntriesTheServerWouldRejectOrThatAreNotUnderstood() {
+        StringBuilder longText = new StringBuilder();
+        for (int i = 0; i < TraceClient.MAX_TAG_LENGTH + 1; i++) {
+            longText.append('x');
+        }
+        String exactlyMax = longText.substring(1);
+        Map<String, String> tags = tagsOf("tags:\n"
+                + "  ci: \"true\"\n"
+                + "  " + longText + ": key-too-long\n"
+                + "  long: \"" + longText + "\"\n"
+                + "  max: " + exactlyMax + "\n"
+                + "  \"has space\": x\n"
+                + "  \"\": blank-key\n"
+                + "  -dash-first: x\n"
+                + "  empty:\n"
+                + "  comment-only:   # nothing\n"
+                + "  a:b\n"
+                + "  no colon at all\n"
+                + "  broken: \"never closed\n"
+                + "  trailing: \"x\" junk\n"
+                + "  list: [1, 2]\n"
+                + "  map: {a: b}\n"
+                + "  block: |\n"
+                + "  ok.key_1-2: fine\n"
+                + "  ci: \"duplicate, first wins\"\n");
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("ci", "true");
+        expected.put("max", exactlyMax);
+        expected.put("ok.key_1-2", "fine");
+        assertEquals(expected, tags);
+    }
+
+    @Test
+    void serverWideTags_areCappedSoTheEventStaysWithinTheServersTagLimit(@TempDir Path plugins) throws Exception {
+        // Arrange: 40 server-wide tags, 30 event tags.
+        StringBuilder file = new StringBuilder("tags:\n");
+        for (int i = 0; i < 40; i++) {
+            file.append("  s").append(i).append(": v\n");
+        }
+        assertEquals(TraceClient.MAX_TAGS, tagsOf(file.toString()).size(), "at most MAX_TAGS are read");
+        writeServerWideConfig(plugins, file.toString());
+        Map<String, String> tags = new LinkedHashMap<>();
+        for (int i = 0; i < 30; i++) {
+            tags.put("e" + i, "v");
+        }
+
+        // Act
+        String body = reportedBody(plugins, "startup", tags);
+
+        // Assert
+        int pairs = body.split("\":\"v\"", -1).length - 1;
+        assertEquals(TraceClient.MAX_TAGS, pairs, body);
+        assertTrue(body.contains("\"e29\":\"v\"") && body.contains("\"s1\":\"v\"") && !body.contains("\"s2\""), body);
+    }
+
+    @Test
+    void serverWideTags_doNotResurrectADisabledClient(@TempDir Path plugins) throws Exception {
+        writeServerWideConfig(plugins, "enabled: false\ntags:\n  ci: \"true\"\n");
+
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin").key("k").serverWideConfig(plugins.toFile()).build();
+        client.report("startup");
+        client.close();
+
+        assertFalse(client.isEnabled());
+        assertEquals(TraceClient.REASON_SERVER_WIDE, client.disabledReason());
+        assertFalse(arrived.await(300, TimeUnit.MILLISECONDS), "nothing should have been sent");
+    }
+
+    @Test
+    void serverWideTags_areNoneWithoutAServerWideConfigOrAFileThatHasNone(@TempDir Path plugins) throws Exception {
+        // No serverWideConfig(...) at all.
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin").key("k").build();
+        client.report("startup");
+        assertTrue(arrived.await(5, TimeUnit.SECONDS));
+        client.close();
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"startup\"}", received.get(0).body);
+
+        // A file with only the switch in it.
+        arrived = new CountDownLatch(1);
+        writeServerWideConfig(plugins, "enabled: true\n");
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"startup\"}", reportedBody(plugins, "startup", null));
+    }
+
+    @Test
+    void serverWideTags_aFreshlyCreatedFileHasNoActiveTags(@TempDir Path plugins) throws Exception {
+        // Created by build() because it was missing ...
+        String body = reportedBody(plugins, "startup", null);
+
+        // ... and nothing in it is live: the example is commented out.
+        assertTrue(Files.exists(plugins.resolve("trace").resolve("config.yml")));
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"startup\"}", body);
+        TraceClient.ServerWideConfig config = TraceClient.parseServerWideConfig(
+                Arrays.asList(TraceClient.SERVER_WIDE_CONFIG_CONTENT.split("\n")));
+        assertTrue(config.tags.isEmpty());
+        assertFalse(config.disables);
+    }
+
+    @Test
+    void serverWideTags_malformedFileNeverThrowsAndReportingStillWorks(@TempDir Path plugins) throws Exception {
+        // Arrange: garbage of every kind.
+        String[] contents = {
+                "tags",
+                "tags:\n  :\n  ::::\n  \"\n  '\n  \\\n\t\tci:\t\"true\n",
+                "tags: {ci: true}\n",
+                "tags:\n- ci\n- \"true\"\n",
+                "\u0000\u0001tags:\n  \u0000: \u0001\n",
+        };
+        for (String content : contents) {
+            received.clear();
+            arrived = new CountDownLatch(1);
+            writeServerWideConfig(plugins, content);
+            String body = assertDoesNotThrow(() -> reportedBody(plugins, "startup", null), content);
+            assertEquals("{\"application\":\"MyPlugin\",\"name\":\"startup\"}", body, content);
+        }
+
+        // Bytes that are not UTF-8 at all.
+        received.clear();
+        arrived = new CountDownLatch(1);
+        Path file = plugins.resolve("trace").resolve("config.yml");
+        Files.write(file, new byte[] {'t', 'a', 'g', 's', ':', '\n', ' ', ' ', 'c', 'i', ':', ' ', (byte) 0xC3, (byte) 0x28, '\n'});
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"startup\"}", reportedBody(plugins, "startup", null),
+                "a file that is not UTF-8 counts as enabled with no tags");
+    }
+
+    @Test
+    void withServerWideTags_leavesTheEventAloneWhenThereAreNone() {
+        Map<String, String> tags = Collections.singletonMap("name", "home");
+        assertSame(tags, TraceClient.withServerWideTags(tags, Collections.<String, String>emptyMap()));
+        assertNull(TraceClient.withServerWideTags(null, Collections.<String, String>emptyMap()));
+    }
+
+    @Test
     void serverWideConfig_ioFailureIsLoggedFineAndTreatedAsEnabled(@TempDir Path scratch) throws Exception {
         // Arrange
         // A "plugins directory" that is a regular file: trace/config.yml can
@@ -663,9 +900,24 @@ class TraceClientTest {
         client.close();
     }
 
-    private static String lastLine(Path file) throws java.io.IOException {
-        List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
-        return lines.get(lines.size() - 1) + "\n";
+    private static Path writeServerWideConfig(Path plugins, String content) throws java.io.IOException {
+        Path file = plugins.resolve("trace").resolve("config.yml");
+        Files.createDirectories(file.getParent());
+        Files.write(file, content.getBytes(StandardCharsets.UTF_8));
+        return file;
+    }
+
+    /** Builds a client over {@code plugins}, reports one event, and returns the body the server got. */
+    private String reportedBody(Path plugins, String name, Map<String, String> tags) throws Exception {
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin").key("k").serverWideConfig(plugins.toFile()).build();
+        client.report(name, null, tags);
+        assertTrue(arrived.await(5, TimeUnit.SECONDS), "the report should reach the server");
+        client.close();
+        return received.get(received.size() - 1).body;
+    }
+
+    private static Map<String, String> tagsOf(String content) {
+        return TraceClient.parseServerWideConfig(Arrays.asList(content.split("\n", -1))).tags;
     }
 
     private static byte[] readAll(InputStream in) throws java.io.IOException {
