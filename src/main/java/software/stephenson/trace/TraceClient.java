@@ -1,5 +1,5 @@
 /*
- * trace-client 0.3.0 -- https://github.com/Stephenson-Software/trace-client-java
+ * trace-client 0.4.0 -- https://github.com/Stephenson-Software/trace-client-java
  *
  * One call to report that a program was used. Copy this file into a project as
  * is, or depend on the artifact; either way there is nothing else to add.
