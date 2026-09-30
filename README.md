@@ -8,7 +8,8 @@ whole library is one file, `TraceClient.java`, and the integration on the
 program side is meant to stay one call.
 
 ```java
-TraceClient trace = TraceClient.builder("https://trace.danielstephenson.dev", "MyPlugin")
+TraceClient trace = TraceClient.builder("https://trace.danielstephenson.dev", "MyPlugin",
+                getDescription().getVersion())
         .key(config.getString("usage-reporting.key"))
         .enabled(config.getBoolean("usage-reporting.enabled", true))
         .serverWideConfig(getDataFolder().getParentFile()) // plugins/ -- Bukkit plugins only
@@ -32,6 +33,19 @@ trace.report("command", 1.0, Collections.singletonMap("name", "home"));
 // on shutdown
 trace.close();
 ```
+
+## Every event carries the program's version
+
+The third argument to `builder` is the program's own version, and it is
+required: a blank one, or one over 255 characters, throws
+`IllegalArgumentException`. Every event the client sends — `startup`,
+`command`, anything else — carries it as the tag `version`, so every event
+can be tied to a release, not just `startup`. An event that passes its own
+`version` tag keeps it. There is no need to tag `startup` by hand any more.
+
+Before 0.4.0, `builder` took two arguments and only events tagged by hand
+carried a version. Upgrading is one argument: in a Bukkit plugin,
+`getDescription().getVersion()`.
 
 ## What `report` promises
 
@@ -79,8 +93,8 @@ tags:
   Values may be double-quoted, single-quoted or bare; blank lines and `#`
   comments inside the block are skipped. The block ends at the next line that
   is not indented, or at the end of the file.
-- An event's own tag always wins: a server-wide `version` never overwrites the
-  `version` a plugin sends.
+- An event's own tag always wins, and the program's version is the event's
+  own: a server-wide `version` never overwrites it.
 - Entries the trace server would reject are dropped one by one, never the
   whole report: keys must match `[A-Za-z0-9][A-Za-z0-9_.-]*`, keys and values
   are at most 255 characters, and server-wide tags stop being added once an
@@ -113,7 +127,7 @@ plugins already vendor bStats' `Metrics.java`.
 <dependency>
     <groupId>com.github.Stephenson-Software</groupId>
     <artifactId>trace-client-java</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
 </dependency>
 ```
 
@@ -124,10 +138,10 @@ Shade it into a plugin jar; it is one class.
 `POST {baseUrl}/api/metrics` with `Authorization: Bearer <key>` and a body of
 
 ```json
-{"application":"MyPlugin","name":"command","value":1.0,"tags":{"name":"home"}}
+{"application":"MyPlugin","name":"command","value":1.0,"tags":{"name":"home","version":"1.4.0"}}
 ```
 
-`value` and `tags` are omitted when not given. The server assigns the
+`value` is omitted when not given; `tags` always holds at least `version`. The server assigns the
 timestamp. A `201` is success; anything else is logged at `FINE` and dropped.
 
 ## Keys
