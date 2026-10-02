@@ -286,8 +286,11 @@ public final class TraceClient {
      * nor stop the host program.
      */
     private ServerWideConfig readServerWideConfig(File pluginsDirectory) {
-        Path file = new File(pluginsDirectory, SERVER_WIDE_CONFIG_PATH).toPath();
+        File location = new File(pluginsDirectory, SERVER_WIDE_CONFIG_PATH);
         try {
+            // Inside the try: toPath() throws InvalidPathException for a path
+            // the file system cannot represent, and build() never throws.
+            Path file = location.toPath();
             if (!Files.exists(file)) {
                 Files.createDirectories(file.getParent());
                 Files.write(file, SERVER_WIDE_CONFIG_CONTENT.getBytes(StandardCharsets.UTF_8));
@@ -295,7 +298,7 @@ public final class TraceClient {
             }
             return parseServerWideConfig(Files.readAllLines(file, StandardCharsets.UTF_8));
         } catch (IOException | RuntimeException failure) {
-            log("could not read server-wide config " + file + ": " + failure);
+            log("could not read server-wide config " + location + ": " + failure);
             return ServerWideConfig.NONE;
         }
     }
