@@ -957,6 +957,29 @@ class TraceClientTest {
         client.close();
     }
 
+    @Test
+    void serverWideConfig_aPathThatCannotBeConvertedIsLoggedFineAndTreatedAsEnabled() throws Exception {
+        // Arrange
+        // A NUL in the name makes File.toPath() throw InvalidPathException --
+        // a RuntimeException that build() must not let out.
+        File unconvertible = new File("plugins\u0000");
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.serverWideInvalidPath");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
+
+        // Act
+        TraceClient client = assertDoesNotThrow(() -> TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
+                .serverWideConfig(unconvertible).logger(logger).build());
+
+        // Assert
+        assertTrue(client.isEnabled(), "a switch file that cannot be located must not turn reporting off");
+        assertTrue(log.await(1, TimeUnit.SECONDS), "the failure should be mentioned at FINE");
+        assertEquals(Level.FINE, log.records.get(0).getLevel());
+        assertTrue(log.records.get(0).getMessage().contains("server-wide config"), log.records.get(0).getMessage());
+        client.close();
+    }
+
     private static Path writeServerWideConfig(Path plugins, String content) throws java.io.IOException {
         Path file = plugins.resolve("trace").resolve("config.yml");
         Files.createDirectories(file.getParent());
