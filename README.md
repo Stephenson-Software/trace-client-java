@@ -18,8 +18,9 @@ TraceClient trace = TraceClient.builder("https://trace.danielstephenson.dev", "M
 
 // Say so, every startup, on the program's own logger.
 if (trace.isEnabled()) {
-    getLogger().info("Usage reporting is on: MyPlugin sends its name, version and command names to "
-            + "https://trace.danielstephenson.dev - nothing about players or the server. "
+    getLogger().info("Usage reporting is on: MyPlugin sends its name, version, command names and a "
+            + "random server ID to https://trace.danielstephenson.dev - nothing about players, and "
+            + "nothing that identifies the server's owner or address. "
             + "Turn it off with usage-reporting.enabled: false in this plugin's config.yml, "
             + "or for every plugin with enabled: false in plugins/trace/config.yml. "
             + "Details: https://github.com/Stephenson-Software/trace#usage-reporting");
@@ -47,6 +48,61 @@ Before 0.4.0, `builder` took two arguments and only events tagged by hand
 carried a version. Upgrading is one argument: in a Bukkit plugin,
 `getDescription().getVersion()`.
 
+## Every event carries a random server ID
+
+Since 0.5.0, every event also carries the tag `install`: a random ID for
+the installation, so the trace server can count **distinct servers** ("active
+servers in the last 30 days") rather than raw events. This is the same idea
+as bStats' `serverUuid`, and it is said out loud here because it is the one
+thing the client sends that is the same from one event to the next.
+
+**What it is.** A `UUID.randomUUID()`. It is not derived from anything — not
+a hostname, an IP address, a MAC address, a player, an account or a path. It
+identifies no person and no address; all it can say is "these events came
+from the same server". (The trace server still sees the IP address of every
+HTTP request, as every web server does.)
+
+**Where it lives.** On a Spigot server, as the `server-id:` line of
+`plugins/trace/config.yml`, shared by every plugin on that server. The first
+time an *enabled* client finds no `server-id:` there, it appends one, under a
+comment that says what it is:
+
+```yaml
+#
+# server-id: a random ID made on first run and sent as the tag "install", so
+# trace can count servers, not events. It identifies no person and no IP
+# address. Delete the server-id line to get a new one.
+server-id: 0f8b6c1e-3a52-4c8e-9a0d-6e2f1b7c4d90
+```
+
+Nothing else in the file is touched: comments, `enabled:` and `tags:` are
+kept byte for byte. If the file cannot be read or written, a fresh ID is used
+in memory for that run only — `build()` still never throws.
+
+**Resetting it.** Delete the `server-id:` line; the next start writes a new
+one. Or set your own value (letters, digits, `_`, `.`, `-`; at most 255
+characters).
+
+**Opting out.** Every [opt-out](#opting-out) below also stops the ID: a
+disabled client never generates one, never writes one, and sends nothing.
+There is no way to send events without it short of turning reporting off;
+that is deliberate, so "how many servers" is a number that can be trusted.
+
+**Programs that are not plugins.** Without `serverWideConfig(...)`, no ID is
+made up and no hidden file is written anywhere. A program that wants to be
+counted passes one it stores itself, e.g. a UUID it generated on first run
+and keeps in its own config:
+
+```java
+TraceClient.builder(url, "MyCli", version).key(key)
+        .installId(config.getString("usage-reporting.install-id")) // null or blank: none sent
+        .build();
+```
+
+An explicit `installId(...)` wins over `server-id:`. An event that passes its
+own `install` tag keeps it. `trace.installId()` returns the ID in use (`null`
+when disabled or when there is none), so a program can print it.
+
 ## What `report` promises
 
 | Property | Meaning |
@@ -65,7 +121,7 @@ last word. `build()` checks these in order; the first match wins and is what
 | Switch | `disabledReason()` |
 |---|---|
 | Environment: `TRACE_USAGE_REPORTING=off` (or `false`, `0`, `no`) or `DO_NOT_TRACK=1` (or `true`, `yes`), case-insensitive. Always checked. | `environment` |
-| Server-wide, when `serverWideConfig(pluginsDirectory)` was given: `enabled: false` in `plugins/trace/config.yml`. `build()` creates the file with `enabled: true` (and a commented-out [`tags:`](#server-wide-tags) example) if it is missing and never rewrites it afterwards; it is read with a line regex, no YAML library. An IO failure is logged at `FINE` and counts as enabled. | `server-wide config: plugins/trace/config.yml` |
+| Server-wide, when `serverWideConfig(pluginsDirectory)` was given: `enabled: false` in `plugins/trace/config.yml`. `build()` creates the file with `enabled: true` (and a commented-out [`tags:`](#server-wide-tags) example) if it is missing; afterwards the only change it ever makes is appending a [`server-id:`](#every-event-carries-a-random-server-id) line when an enabled client finds none. It is read with a line regex, no YAML library. An IO failure is logged at `FINE` and counts as enabled. | `server-wide config: plugins/trace/config.yml` |
 | The program's own setting: `enabled(false)`. | `config.yml` |
 | No key, or a blank one. | `no key` |
 
@@ -127,7 +183,7 @@ plugins already vendor bStats' `Metrics.java`.
 <dependency>
     <groupId>com.github.Stephenson-Software</groupId>
     <artifactId>trace-client-java</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
 </dependency>
 ```
 
@@ -138,10 +194,11 @@ Shade it into a plugin jar; it is one class.
 `POST {baseUrl}/api/metrics` with `Authorization: Bearer <key>` and a body of
 
 ```json
-{"application":"MyPlugin","name":"command","value":1.0,"tags":{"name":"home","version":"1.4.0"}}
+{"application":"MyPlugin","name":"command","value":1.0,"tags":{"name":"home","version":"1.4.0","install":"0f8b6c1e-3a52-4c8e-9a0d-6e2f1b7c4d90"}}
 ```
 
-`value` is omitted when not given; `tags` always holds at least `version`. The server assigns the
+`value` is omitted when not given; `tags` always holds at least `version`, and
+`install` whenever the client has an [installation ID](#every-event-carries-a-random-server-id). The server assigns the
 timestamp. A `201` is success; anything else is logged at `FINE` and dropped.
 
 ## Keys
