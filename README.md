@@ -89,9 +89,26 @@ There is no way to send events without it short of turning reporting off;
 that is deliberate, so "how many servers" is a number that can be trusted.
 
 **Programs that are not plugins.** Without `serverWideConfig(...)`, no ID is
-made up and no hidden file is written anywhere. A program that wants to be
-counted passes one it stores itself, e.g. a UUID it generated on first run
-and keeps in its own config:
+made up and no hidden file is written anywhere unless the program asks for
+one. Since 0.6.0 a program can name a file to keep the ID in — the program
+chooses it; there is no default location:
+
+```java
+TraceClient trace = TraceClient.builder(url, "mycli", version).key(key)
+        .enabled(settings.usageReportingEnabled())
+        .installIdFile(new File(dataDir, "trace-install-id")) // e.g. ~/.local/share/mycli/
+        .build();
+```
+
+The first time an *enabled* client starts, it writes a new random UUID to
+that file (creating parent directories) and reuses it on every later run.
+The first line that is an ID (`[A-Za-z0-9_.-]`, at most 255 characters) is
+the one used. If the file cannot be read or written, a fresh ID is used in
+memory for that run only — `build()` never throws over it, and a file that
+exists but cannot be read is never overwritten. Delete the file to reset it,
+or put your own value on its first line.
+
+A program that already keeps its own settings can pass the ID instead:
 
 ```java
 TraceClient.builder(url, "MyCli", version).key(key)
@@ -99,9 +116,18 @@ TraceClient.builder(url, "MyCli", version).key(key)
         .build();
 ```
 
-An explicit `installId(...)` wins over `server-id:`. An event that passes its
-own `install` tag keeps it. `trace.installId()` returns the ID in use (`null`
-when disabled or when there is none), so a program can print it.
+**Precedence.** An explicit `installId(...)` wins over `installIdFile(...)`,
+which wins over the server-wide `server-id:` (the server-wide file then gains
+no `server-id:` line; its `enabled:` switch and `tags:` still apply). An
+event that passes its own `install` tag keeps it. `trace.installId()` returns
+the ID in use (`null` when disabled or when there is none), so a program can
+print it.
+
+`TraceClient.installIdFromFile(file)` is the same load-or-create step on its
+own, for a program that wants the ID for something else. **Called directly,
+it writes the file whatever the opt-outs say** — pass the file to
+`installIdFile(...)` to keep the guarantee that a disabled client never
+generates, reads or writes an ID.
 
 ## What `report` promises
 
@@ -183,7 +209,7 @@ plugins already vendor bStats' `Metrics.java`.
 <dependency>
     <groupId>com.github.Stephenson-Software</groupId>
     <artifactId>trace-client-java</artifactId>
-    <version>0.5.0</version>
+    <version>0.6.0</version>
 </dependency>
 ```
 
