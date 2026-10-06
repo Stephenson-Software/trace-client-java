@@ -1,5 +1,5 @@
 /*
- * trace-client 0.6.0 -- https://github.com/Stephenson-Software/trace-client-java
+ * trace-client 0.6.1 -- https://github.com/Stephenson-Software/trace-client-java
  *
  * One call to report that a program was used. Copy this file into a project as
  * is, or depend on the artifact; either way there is nothing else to add.
@@ -124,7 +124,7 @@ import java.util.regex.Pattern;
 public final class TraceClient {
 
     /** This client's version, as sent in the User-Agent. */
-    public static final String VERSION = "0.6.0";
+    public static final String VERSION = "0.6.1";
 
     /** How many reports may wait to be sent before new ones are dropped. */
     public static final int QUEUE_CAPACITY = 256;
