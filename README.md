@@ -23,7 +23,7 @@ if (trace.isEnabled()) {
             + "nothing that identifies the server's owner or address. "
             + "Turn it off with usage-reporting.enabled: false in this plugin's config.yml, "
             + "or for every plugin with enabled: false in plugins/trace/config.yml. "
-            + "Details: https://github.com/Stephenson-Software/trace#usage-reporting");
+            + "Details: https://danielstephenson.dev/usage-reporting");
 } else {
     getLogger().info("Usage reporting is off (" + trace.disabledReason() + ").");
 }
@@ -155,7 +155,7 @@ last word. `build()` checks these in order; the first match wins and is what
 nothing and costs nothing. A program that runs on other people's machines
 should expose its own switch in its configuration and print, on every
 startup, whether reporting is on and how to turn it off — see the example
-above and the [usage reporting](https://github.com/Stephenson-Software/trace#usage-reporting)
+above and the [usage reporting](https://danielstephenson.dev/usage-reporting)
 page for the wording the fleet uses.
 
 ## Server-wide tags
