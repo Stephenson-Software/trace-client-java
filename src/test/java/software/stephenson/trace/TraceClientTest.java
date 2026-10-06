@@ -322,6 +322,78 @@ class TraceClientTest {
     }
 
     @Test
+    void withVersion_dropsNullKeysAndValuesAndKeepsTheEventsOwnVersion() {
+        // Arrange
+        Map<String, String> tags = new LinkedHashMap<>();
+        tags.put("name", "home");
+        tags.put("nullValue", null);
+        tags.put(null, "nullKey");
+        tags.put("version", "own");
+
+        // Act
+        Map<String, String> merged = TraceClient.withVersion(tags, "1.2.3");
+
+        // Assert
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("name", "home");
+        expected.put("version", "own");
+        assertEquals(expected, merged);
+        assertEquals(4, tags.size(), "the caller's map is not modified");
+    }
+
+    @Test
+    void withVersion_addsTheVersionEvenToAnEventAlreadyAtMaxTags() {
+        // Characterizes current behaviour, which issue #13 questions: unlike
+        // install and the server-wide tags, version is not held to MAX_TAGS,
+        // so an event with MAX_TAGS tags of its own goes out with one more.
+        // Arrange
+        Map<String, String> tags = new LinkedHashMap<>();
+        for (int i = 0; i < TraceClient.MAX_TAGS; i++) {
+            tags.put("e" + i, "v");
+        }
+
+        // Act
+        Map<String, String> merged = TraceClient.withVersion(tags, "1.2.3");
+
+        // Assert
+        assertEquals(TraceClient.MAX_TAGS + 1, merged.size());
+        assertEquals("1.2.3", merged.get("version"));
+    }
+
+    @Test
+    void withInstall_addsTheIdOnlyWhenThereIsOneAndRoomAndNoneAlready() {
+        // Arrange
+        Map<String, String> tags = new LinkedHashMap<>();
+        tags.put("version", "1.2.3");
+        Map<String, String> own = Collections.singletonMap("install", "the-events-own");
+        Map<String, String> full = new LinkedHashMap<>();
+        for (int i = 0; i < TraceClient.MAX_TAGS; i++) {
+            full.put("e" + i, "v");
+        }
+
+        // Act
+        Map<String, String> added = TraceClient.withInstall(tags, "abc");
+
+        // Assert
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("version", "1.2.3");
+        expected.put("install", "abc");
+        assertEquals(expected, added);
+        assertEquals(Collections.singletonMap("version", "1.2.3"), tags, "the caller's map is not modified");
+        assertSame(tags, TraceClient.withInstall(tags, null), "no ID, nothing added");
+        assertSame(own, TraceClient.withInstall(own, "abc"), "the event's own install tag wins");
+        assertSame(full, TraceClient.withInstall(full, "abc"), "never pushed past MAX_TAGS");
+    }
+
+    @Test
+    void serverWideConfig_theFirstEnabledLineIsTheSwitch() {
+        assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled: true", "enabled: false")).disables);
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled: false", "enabled: true")).disables);
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("# enabled: true", "enabled: false")).disables,
+                "a commented-out line is not the first one");
+    }
+
+    @Test
     void json_escapesControlCharactersAndSkipsNullTags() {
         Map<String, String> tags = new LinkedHashMap<>();
         tags.put("ok", "line\nbreak\ttab\\slash");
