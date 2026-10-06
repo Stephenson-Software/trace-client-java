@@ -162,7 +162,7 @@ public final class TraceClient {
     /** Exactly what a missing server-wide switch file is created with. */
     static final String SERVER_WIDE_CONFIG_CONTENT =
             "# Server-wide switch for usage reporting by plugins that report to trace\n"
-            + "# (https://github.com/Stephenson-Software/trace#usage-reporting).\n"
+            + "# (https://danielstephenson.dev/usage-reporting).\n"
             + "# Set enabled to false and every such plugin on this server stops reporting,\n"
             + "# regardless of its own usage-reporting.enabled setting. Plugins never turn\n"
             + "# this back on.\n"
