@@ -209,7 +209,7 @@ plugins already vendor bStats' `Metrics.java`.
 <dependency>
     <groupId>com.github.Stephenson-Software</groupId>
     <artifactId>trace-client-java</artifactId>
-    <version>0.6.0</version>
+    <version>0.6.1</version>
 </dependency>
 ```
 
