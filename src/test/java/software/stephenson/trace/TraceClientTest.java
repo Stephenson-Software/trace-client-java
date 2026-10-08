@@ -720,6 +720,25 @@ class TraceClientTest {
     }
 
     @Test
+    void serverWideConfig_theSwitchIgnoresATrailingCommentAndLeadingIndent() {
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled: false # off for now")).disables);
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("  enabled: false")).disables,
+                "indented, but outside a tags: block, it is still the switch");
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled :\tFALSE")).disables);
+    }
+
+    @Test
+    void serverWideConfig_aQuotedFalseDoesNotDisableYet() {
+        // Characterizes current behaviour, which issue #15 questions: the
+        // enabled: value is compared with its quotes on, unlike tag values
+        // and server-id:, so a quoted spelling of off leaves reporting on.
+        for (String quoted : new String[] {"\"false\"", "'false'", "\"off\"", "'no'"}) {
+            assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled: " + quoted)).disables,
+                    "enabled: " + quoted);
+        }
+    }
+
+    @Test
     void environment_disablesAndWinsOverTheServerWideFile(@TempDir Path plugins) throws Exception {
         // Arrange
         // The file says on; the environment says off. The environment wins,
@@ -909,6 +928,47 @@ class TraceClientTest {
         expected.put("max", exactlyMax);
         expected.put("ok.key_1-2", "fine");
         assertEquals(expected, tags);
+    }
+
+    @Test
+    void serverWideTags_doubleQuotedValuesUnescapeNewlineTabCarriageReturnAndBackslash() {
+        Map<String, String> tags = tagsOf("tags:\n"
+                + "  a: \"line\\nbreak\\ttab\\rreturn\"\n"
+                + "  b: \"back\\\\slash\\/solidus\\qother\"\n"
+                + "  c: 'single \\n stays'\n");
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("a", "line\nbreak\ttab\rreturn");
+        expected.put("b", "back\\slash/solidusqother");
+        expected.put("c", "single \\n stays");
+        assertEquals(expected, tags);
+    }
+
+    @Test
+    void serverWideTags_dropValuesThatOpenAnAnchorAliasTagOrFoldedScalar() {
+        Map<String, String> tags = tagsOf("tags:\n"
+                + "  anchor: &a x\n"
+                + "  alias: *a\n"
+                + "  tag: !!str x\n"
+                + "  directive: %x\n"
+                + "  at: @x\n"
+                + "  backtick: `x\n"
+                + "  folded: >\n"
+                + "  ok: fine\n");
+        assertEquals(Collections.singletonMap("ok", "fine"), tags);
+    }
+
+    @Test
+    void serverWideTags_aHashIsACommentOnlyAfterWhitespace() {
+        Map<String, String> tags = tagsOf("tags:\n"
+                + "  a: issue#13\n"
+                + "  b: x\t# tab before the hash\n"
+                + "\tc: tab-separated\n"
+                + "  d:\tafter-a-tab\n");
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("a", "issue#13");
+        expected.put("b", "x");
+        expected.put("d", "after-a-tab");
+        assertEquals(expected, tags, "c is indented differently from the block's first entry");
     }
 
     @Test
@@ -1222,6 +1282,27 @@ class TraceClientTest {
         assertEquals("explicit", both.installId());
         assertEquals(TraceClient.SERVER_WIDE_CONFIG_CONTENT,
                 new String(Files.readAllBytes(plugins.resolve("trace").resolve("config.yml")), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void builder_rejectsAnOverlongInstallIdAndAcceptsOneAtTheLimit() {
+        // Arrange
+        StringBuilder max = new StringBuilder();
+        for (int i = 0; i < TraceClient.MAX_TAG_LENGTH; i++) {
+            max.append('i');
+        }
+        TraceClient.Builder builder = TraceClient.builder(baseUrl(), "MyCli", "1.2.3");
+
+        // Act
+        IllegalArgumentException tooLong = assertThrows(IllegalArgumentException.class,
+                () -> builder.installId(max + "i"));
+        builder.installId("  " + max + "  ");
+
+        // Assert
+        assertEquals("installId is longer than " + TraceClient.MAX_TAG_LENGTH + " characters", tooLong.getMessage());
+        TraceClient client = builder.key("k").build();
+        assertEquals(max.toString(), client.installId(), "surrounding whitespace does not count");
+        client.close();
     }
 
     @Test
