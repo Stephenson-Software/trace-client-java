@@ -1215,6 +1215,80 @@ class TraceClientTest {
     }
 
     @Test
+    void installId_anUnreadableConfigIsLoggedFineAndNotAppendedTo(@TempDir Path scratch) throws Exception {
+        // Arrange: as above, a "plugins directory" that is a regular file.
+        Path notADirectory = scratch.resolve("plugins");
+        Files.write(notADirectory, "not a directory".getBytes(StandardCharsets.UTF_8));
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.unreadableServerId");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
+
+        // Act
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
+                .serverWideConfig(notADirectory.toFile()).logger(logger).build();
+        client.close();
+
+        // Assert: both happen on the building thread, so they are already logged.
+        assertEquals(2, log.records.size(), log.records.toString());
+        assertEquals(Level.FINE, log.records.get(0).getLevel());
+        assertTrue(log.records.get(0).getMessage().startsWith("[trace] could not read server-wide config "),
+                log.records.get(0).getMessage());
+        assertEquals(Level.FINE, log.records.get(1).getLevel());
+        assertEquals("[trace] using an in-memory server-id for this process: server-wide config was not readable",
+                log.records.get(1).getMessage());
+    }
+
+    @Test
+    void installId_isAppendedToAnEmptyConfigWithoutALeadingBlankLine(@TempDir Path plugins) throws Exception {
+        // Arrange: the file exists but is empty, so build() does not create it.
+        Path file = writeServerWideConfigExactly(plugins, "");
+
+        // Act
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").serverWideConfig(plugins.toFile()).build();
+        client.close();
+
+        // Assert
+        assertTrue(client.isEnabled(), "no enabled: line counts as enabled");
+        assertEquals(TraceClient.SERVER_ID_COMMENT + "server-id: " + client.installId() + "\n",
+                new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void installId_isAppendedDirectlyBelowAConfigThatEndsInANewline(@TempDir Path plugins) throws Exception {
+        // Arrange
+        Path file = writeServerWideConfigExactly(plugins, "enabled: true\n");
+
+        // Act
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").serverWideConfig(plugins.toFile()).build();
+        client.close();
+
+        // Assert
+        assertEquals("enabled: true\n" + TraceClient.SERVER_ID_COMMENT + "server-id: " + client.installId() + "\n",
+                new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void installId_anUnusableServerIdLineGetsAUsableOneAppendedAndKept(@TempDir Path plugins) throws Exception {
+        // Arrange: an operator's hand-typed ID with a space in it.
+        Path file = writeServerWideConfigExactly(plugins, "enabled: true\nserver-id: has space\n");
+
+        // Act
+        TraceClient first = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").serverWideConfig(plugins.toFile()).build();
+        String afterFirst = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        TraceClient second = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").serverWideConfig(plugins.toFile()).build();
+        first.close();
+        second.close();
+
+        // Assert
+        assertTrue(first.installId().matches(UUID_PATTERN), first.installId());
+        assertEquals("enabled: true\nserver-id: has space\n" + TraceClient.SERVER_ID_COMMENT + "server-id: " + first.installId() + "\n",
+                afterFirst, "the unusable line is left alone, not rewritten");
+        assertEquals(first.installId(), second.installId(), "the appended line is the one read from then on");
+        assertEquals(afterFirst, new String(Files.readAllBytes(file), StandardCharsets.UTF_8), "and nothing more is appended");
+    }
+
+    @Test
     void installId_aDisabledClientNeitherGeneratesNorWritesOne(@TempDir Path plugins) throws Exception {
         Path file = plugins.resolve("trace").resolve("config.yml");
 
