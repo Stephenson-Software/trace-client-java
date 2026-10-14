@@ -1183,6 +1183,14 @@ class TraceClientTest {
         assertEquals("abc-123", TraceClient.parseServerWideConfig(Arrays.asList("server-id: \"abc-123\"  # mine")).serverId);
         assertEquals("first", TraceClient.parseServerWideConfig(Arrays.asList("server-id: first", "server-id: second")).serverId);
         assertEquals("good", TraceClient.parseServerWideConfig(Arrays.asList("server-id:", "server-id: has space", "server-id: good")).serverId);
+        assertNull(TraceClient.parseServerWideConfig(Arrays.asList("server-id: _mine")).serverId, "starts with a letter or digit");
+        assertEquals("good", TraceClient.parseServerWideConfig(Arrays.asList("server-id: -mine", "server-id: good")).serverId);
+        StringBuilder overlong = new StringBuilder();
+        for (int i = 0; i <= TraceClient.MAX_TAG_LENGTH; i++) {
+            overlong.append('a');
+        }
+        assertNull(TraceClient.parseServerWideConfig(Arrays.asList("server-id: " + overlong)).serverId,
+                "at most MAX_TAG_LENGTH characters");
         assertNull(TraceClient.parseServerWideConfig(Arrays.asList("  server-id: indented")).serverId, "column 0 only");
         assertNull(TraceClient.parseServerWideConfig(Arrays.asList("# server-id: commented")).serverId);
         TraceClient.ServerWideConfig inTags = TraceClient.parseServerWideConfig(Arrays.asList("tags:", "  server-id: x"));

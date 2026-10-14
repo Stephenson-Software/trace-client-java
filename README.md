@@ -80,8 +80,9 @@ kept byte for byte. If the file cannot be read or written, a fresh ID is used
 in memory for that run only — `build()` still never throws.
 
 **Resetting it.** Delete the `server-id:` line; the next start writes a new
-one. Or set your own value (letters, digits, `_`, `.`, `-`; at most 255
-characters).
+one. Or set your own value (letters, digits, `_`, `.`, `-`, starting with a
+letter or digit; at most 255 characters). A `server-id:` line whose value is
+anything else is ignored, and the next start appends a new one below it.
 
 **Opting out.** Every [opt-out](#opting-out) below also stops the ID: a
 disabled client never generates one, never writes one, and sends nothing.
@@ -223,7 +224,8 @@ Shade it into a plugin jar; it is one class.
 {"application":"MyPlugin","name":"command","value":1.0,"tags":{"name":"home","version":"1.4.0","install":"0f8b6c1e-3a52-4c8e-9a0d-6e2f1b7c4d90"}}
 ```
 
-`value` is omitted when not given; `tags` always holds at least `version`, and
+`value` is omitted when not given, and when it is NaN or infinite (neither
+is JSON); `tags` always holds at least `version`, and
 `install` whenever the client has an [installation ID](#every-event-carries-a-random-server-id). The server assigns the
 timestamp. A `201` is success; anything else is logged at `FINE` and dropped.
 

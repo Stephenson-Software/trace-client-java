@@ -488,9 +488,10 @@ public final class TraceClient {
      * double- or single-quoted. Entries the trace server would reject -- and
      * anything this reader does not understand -- are dropped, one by one,
      * and at most {@link #MAX_TAGS} are kept. The first {@code server-id:}
-     * line at column 0, outside a {@code tags:} block, whose value is a valid
-     * tag value made of {@code [A-Za-z0-9_.-]} is the installation's ID; any
-     * other is ignored. Nothing here throws.
+     * line at column 0, outside a {@code tags:} block, whose value is at most
+     * {@value #MAX_TAG_LENGTH} characters of {@code [A-Za-z0-9_.-]} starting
+     * with a letter or digit is the installation's ID; any other is ignored.
+     * Nothing here throws.
      */
     static ServerWideConfig parseServerWideConfig(List<String> lines) {
         Boolean disables = null;
@@ -703,7 +704,8 @@ public final class TraceClient {
 
     /**
      * Reports that {@code name} happened, with an optional numeric value and
-     * optional string tags. Returns immediately; see the class comment.
+     * optional string tags. Returns immediately; see the class comment. A
+     * {@code null} or blank name sends nothing.
      */
     public void report(String name, Double value, Map<String, String> tags) {
         if (executor == null || name == null || name.trim().isEmpty()) {
