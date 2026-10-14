@@ -82,7 +82,8 @@ in memory for that run only — `build()` still never throws.
 **Resetting it.** Delete the `server-id:` line; the next start writes a new
 one. Or set your own value (letters, digits, `_`, `.`, `-`, starting with a
 letter or digit; at most 255 characters). A `server-id:` line whose value is
-anything else is ignored, and the next start appends a new one below it.
+anything else is ignored, and the next start appends a new one to the end of
+the file.
 
 **Opting out.** Every [opt-out](#opting-out) below also stops the ID: a
 disabled client never generates one, never writes one, and sends nothing.
