@@ -616,6 +616,82 @@ class TraceClientTest {
     }
 
     @Test
+    void report_aBaseUrlThatIsNotHttpIsLoggedFineAndNeverThrows() throws Exception {
+        // Arrange
+        // build() takes the base URL as a string and never parses it, so a
+        // typo only shows up in send(): "no protocol" is an IOException, and a
+        // file: URL opens a connection that is not an HttpURLConnection -- a
+        // ClassCastException, which is why send() catches RuntimeException too.
+        String[][] cases = {
+                {"not a url", "java.net.MalformedURLException"},
+                {"file:///trace-client-test", "java.lang.ClassCastException"},
+        };
+        for (String[] misconfigured : cases) {
+            RecordingHandler log = new RecordingHandler();
+            Logger logger = Logger.getLogger("TraceClientTest.misconfigured." + misconfigured[1]);
+            logger.setLevel(Level.ALL);
+            logger.addHandler(log);
+            TraceClient client = assertDoesNotThrow(() ->
+                    TraceClient.builder(misconfigured[0], "MyPlugin", "1.2.3").key("k").logger(logger).build());
+            assertTrue(client.isEnabled(), "a bad URL is not an opt-out");
+
+            // Act
+            assertDoesNotThrow(() -> client.report("startup"));
+            client.close();
+
+            // Assert
+            assertTrue(log.await(5, TimeUnit.SECONDS), misconfigured[0] + " should be mentioned at FINE");
+            LogRecord record = log.records.get(0);
+            assertEquals(Level.FINE, record.getLevel());
+            assertTrue(record.getMessage().startsWith("[trace] could not deliver {\"application\":\"MyPlugin\""),
+                    record.getMessage());
+            assertTrue(record.getMessage().contains(misconfigured[1]), record.getMessage());
+        }
+    }
+
+    @Test
+    void report_drainsAResponseBodyAndKeepsSendingAfterAnError() throws Exception {
+        // Arrange
+        // Unlike the shared server, this one answers with a body: an error page
+        // first, then a 201 with content. send() reads either to its end and
+        // the next report still goes out.
+        List<String> bodies = new CopyOnWriteArrayList<>();
+        CountDownLatch both = new CountDownLatch(2);
+        HttpServer chatty = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        chatty.createContext("/", exchange -> {
+            bodies.add(new String(readAll(exchange.getRequestBody()), StandardCharsets.UTF_8));
+            byte[] reply = new byte[4096]; // more than drain()'s 512-byte buffer
+            Arrays.fill(reply, (byte) 'x');
+            exchange.sendResponseHeaders(bodies.size() == 1 ? 500 : 201, reply.length);
+            exchange.getResponseBody().write(reply);
+            exchange.close();
+            both.countDown();
+        });
+        chatty.start();
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.chatty");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
+        TraceClient client = TraceClient.builder("http://127.0.0.1:" + chatty.getAddress().getPort(), "MyPlugin", "1.2.3")
+                .key("k").logger(logger).build();
+
+        // Act
+        client.report("first");
+        client.report("second");
+        client.close();
+
+        // Assert
+        assertTrue(both.await(5, TimeUnit.SECONDS), "both reports should reach the server");
+        assertEquals(2, bodies.size());
+        assertTrue(bodies.get(1).contains("\"name\":\"second\""), bodies.get(1));
+        assertEquals(1, log.records.size(), "only the 500 is worth a line: " + log.records);
+        assertEquals("[trace] trace server answered 500 for "
+                        + "{\"application\":\"MyPlugin\",\"name\":\"first\",\"tags\":{\"version\":\"1.2.3\"}}",
+                log.records.get(0).getMessage());
+        chatty.stop(0);
+    }
+
+    @Test
     void builder_trimsTheBaseUrlAndApplicationAndDropsEveryTrailingSlash() throws Exception {
         // Arrange
         TraceClient client = TraceClient.builder("  " + baseUrl() + "///  ", "  MyPlugin  ", "1.2.3").key("k").build();
