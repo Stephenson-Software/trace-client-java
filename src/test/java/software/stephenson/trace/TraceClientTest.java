@@ -483,8 +483,12 @@ class TraceClientTest {
             exchange.close();
         });
         slow.start();
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.flood");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
         TraceClient client = TraceClient.builder("http://127.0.0.1:" + slow.getAddress().getPort(), "MyPlugin", "1.2.3")
-                .key("k").build();
+                .key("k").logger(logger).build();
         int flood = TraceClient.QUEUE_CAPACITY * 3;
 
         // Act
@@ -509,6 +513,9 @@ class TraceClientTest {
                 "delivered " + delivered.get() + " of " + flood + "; at most the in-flight one plus a full queue may survive");
         assertTrue(delivered.get() < flood, "an unbounded queue would have delivered all " + flood);
         client.close();
+        // Every delivered report was a 201, so any log line would be about a
+        // dropped one; the README says those drops are silent.
+        assertTrue(log.records.isEmpty(), "a full queue drops without logging, but logged: " + log.records.size());
         slow.stop(0);
     }
 

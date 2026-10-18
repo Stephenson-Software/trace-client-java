@@ -137,7 +137,7 @@ generates, reads or writes an ID.
 |---|---|
 | **Returns immediately** | The HTTP call runs on one daemon thread the client owns. A Spigot plugin can report from the server thread and no tick waits on the network. |
 | **Never throws** | A server that is down, slow, or rejecting the key is a dropped report, not an exception in your program. Drops are logged at `FINE` if you gave a logger, otherwise not at all. |
-| **Bounded** | At most 256 reports wait to be sent; past that, new ones are dropped. A trace server that is unreachable for a week costs a few kilobytes, not your heap. |
+| **Bounded** | At most 256 reports wait to be sent; past that, new ones are dropped without a log line, even at `FINE`. A trace server that is unreachable for a week costs a few kilobytes, not your heap. |
 | **`close()` drains** | Reports already queued get up to the client timeout (5 s total) to be sent before the thread stops, so a CLI that reports and exits at once does not lose its event. Still bounded: an unreachable server delays exit by at most the timeout. |
 
 ## Opting out
@@ -175,8 +175,10 @@ tags:
 
 - `tags:` starts at column 0 and is followed by indented `key: value` lines.
   Values may be double-quoted, single-quoted or bare; blank lines and `#`
-  comments inside the block are skipped. The block ends at the next line that
-  is not indented, or at the end of the file.
+  comments inside the block are skipped, and so is any line indented
+  differently from the block's first entry. The block ends at the next line
+  that is not indented, or at the end of the file. An `enabled:` line inside
+  the block is a tag like any other, not the switch.
 - An event's own tag always wins, and the program's version is the event's
   own: a server-wide `version` never overwrites it.
 - Entries the trace server would reject are dropped one by one, never the
