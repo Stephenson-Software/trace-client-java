@@ -48,9 +48,10 @@ import java.util.regex.Pattern;
  *       are logged at {@link Level#FINE} if a logger was given, and otherwise
  *       not at all.</li>
  *   <li><b>It is bounded.</b> At most {@value #QUEUE_CAPACITY} reports wait to
- *       be sent; beyond that, new reports are dropped rather than accumulated.
- *       A trace server that is unreachable for a week costs a few kilobytes,
- *       not the host's heap.</li>
+ *       be sent; beyond that, new reports are dropped rather than accumulated,
+ *       without a log line, even at {@link Level#FINE}. A trace server
+ *       that is unreachable for a week costs a few kilobytes, not the
+ *       host's heap.</li>
  * </ul>
  *
  * <p>Reporting is opt-out, and the person running the program always has the
@@ -958,7 +959,14 @@ public final class TraceClient {
             return this;
         }
 
-        /** Where dropped reports are mentioned, at {@link Level#FINE}. Optional. */
+        /**
+         * Where problems are mentioned, at {@link Level#FINE}, prefixed
+         * {@code [trace]}: a report the server did not answer {@code 201}
+         * to or that could not be delivered, and a server-wide config or
+         * install ID file that could not be read or written in
+         * {@link #build()}. A report dropped because the queue is full is
+         * not mentioned. Optional; without one, nothing is logged.
+         */
         public Builder logger(Logger logger) {
             this.logger = logger;
             return this;
