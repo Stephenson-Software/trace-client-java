@@ -28,6 +28,7 @@ import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -513,9 +514,17 @@ class TraceClientTest {
                 "delivered " + delivered.get() + " of " + flood + "; at most the in-flight one plus a full queue may survive");
         assertTrue(delivered.get() < flood, "an unbounded queue would have delivered all " + flood);
         client.close();
-        // Every delivered report was a 201, so any log line would be about a
-        // dropped one; the README says those drops are silent.
-        assertTrue(log.records.isEmpty(), "a full queue drops without logging, but logged: " + log.records.size());
+        // The README says drops are silent. The server only answers 201, so
+        // the one other line the send path can write is "could not deliver",
+        // for a loopback connection that failed -- one stray line was seen
+        // once on Java 8 CI. Allow a few of those, far fewer than there were
+        // drops: logging each drop would be hundreds of lines.
+        List<String> messages = log.records.stream().map(LogRecord::getMessage).collect(Collectors.toList());
+        int dropped = flood - (TraceClient.QUEUE_CAPACITY + 1);
+        assertTrue(messages.stream().allMatch(m -> m.startsWith("[trace] could not deliver ")),
+                "only a failed send may be logged, but logged: " + messages);
+        assertTrue(messages.size() < dropped / 10,
+                "a full queue drops without logging, but logged " + messages.size() + " lines: " + messages);
         slow.stop(0);
     }
 
