@@ -422,6 +422,23 @@ class TraceClientTest {
     }
 
     @Test
+    void json_writesValuesAsDoubleToStringDoesWhichIsStillValidJson() {
+        // A value goes out as Double.toString: always with a fraction, and in
+        // exponent form below 1e-3 and from 1e7 up. JSON allows "1.0E20" and
+        // "1.0E-5" (an upper-case E and a signed exponent), so the server
+        // must parse both forms.
+        assertEquals("{\"application\":\"App\",\"name\":\"n\",\"value\":1.0}", TraceClient.json("App", "n", 1.0, null));
+        assertEquals("{\"application\":\"App\",\"name\":\"n\",\"value\":1234567.0}", TraceClient.json("App", "n", 1234567.0, null));
+        assertEquals("{\"application\":\"App\",\"name\":\"n\",\"value\":1.0E7}", TraceClient.json("App", "n", 1e7, null));
+        assertEquals("{\"application\":\"App\",\"name\":\"n\",\"value\":1.0E20}", TraceClient.json("App", "n", 1e20, null));
+        assertEquals("{\"application\":\"App\",\"name\":\"n\",\"value\":0.001}", TraceClient.json("App", "n", 0.001, null));
+        assertEquals("{\"application\":\"App\",\"name\":\"n\",\"value\":1.0E-5}", TraceClient.json("App", "n", 1e-5, null));
+        assertEquals("{\"application\":\"App\",\"name\":\"n\",\"value\":-0.0}", TraceClient.json("App", "n", -0.0, null));
+        assertEquals("{\"application\":\"App\",\"name\":\"n\",\"value\":1.7976931348623157E308}",
+                TraceClient.json("App", "n", Double.MAX_VALUE, null));
+    }
+
+    @Test
     void json_omitsTagsWhenNullOrEmpty() {
         // Arrange + Act
         String nullTags = TraceClient.json("App", "n", null, null);
@@ -705,6 +722,61 @@ class TraceClientTest {
                         + "{\"application\":\"MyPlugin\",\"name\":\"first\",\"tags\":{\"version\":\"1.2.3\"}}",
                 log.records.get(0).getMessage());
         chatty.stop(0);
+    }
+
+    @Test
+    void report_keepsAPathInTheBaseUrlInFrontOfApiMetrics() throws Exception {
+        // Arrange
+        // A trace server behind a reverse proxy under a sub-path: only the
+        // trailing slashes go, the path itself stays.
+        TraceClient client = TraceClient.builder(baseUrl() + "/trace/", "MyPlugin", "1.2.3").key("k").build();
+
+        // Act
+        client.report("startup");
+
+        // Assert
+        assertTrue(arrived.await(5, TimeUnit.SECONDS));
+        assertEquals("/trace/api/metrics", received.get(0).path);
+        client.close();
+    }
+
+    @Test
+    void report_aRedirectIsNotFollowedAndIsLoggedFine() throws Exception {
+        // Arrange
+        // Characterizes current behaviour: the body is streamed with a fixed
+        // length, so HttpURLConnection cannot replay it to a redirect target.
+        // It throws HttpRetryException instead, so a base URL that redirects
+        // (http to https, say) drops every report, and the only trace of it
+        // is a FINE "could not deliver" line.
+        List<String> paths = new CopyOnWriteArrayList<>();
+        HttpServer redirecting = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        redirecting.createContext("/", exchange -> {
+            paths.add(exchange.getRequestURI().getPath());
+            readAll(exchange.getRequestBody());
+            exchange.getResponseHeaders().add("Location", "/moved/api/metrics");
+            exchange.sendResponseHeaders(301, -1);
+            exchange.close();
+        });
+        redirecting.start();
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.redirect");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
+        TraceClient client = TraceClient.builder("http://127.0.0.1:" + redirecting.getAddress().getPort(), "MyPlugin", "1.2.3")
+                .key("k").logger(logger).build();
+
+        // Act
+        assertDoesNotThrow(() -> client.report("startup"));
+
+        // Assert
+        assertTrue(log.await(5, TimeUnit.SECONDS), "the redirect should be mentioned at FINE");
+        client.close();
+        assertEquals(Collections.singletonList("/api/metrics"), paths, "the redirect target is never asked");
+        assertEquals(Level.FINE, log.records.get(0).getLevel());
+        String message = log.records.get(0).getMessage();
+        assertTrue(message.startsWith("[trace] could not deliver {\"application\":\"MyPlugin\",\"name\":\"startup\""), message);
+        assertTrue(message.contains("java.net.HttpRetryException"), message);
+        redirecting.stop(0);
     }
 
     @Test
