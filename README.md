@@ -235,9 +235,8 @@ timestamp. A `201` is success; anything else is logged at `FINE` and dropped.
 Redirects are not followed. The body is streamed with a fixed length, so
 `HttpURLConnection` cannot re-send it to a redirect target: a redirect is
 logged at `FINE` and the report is dropped, like any other answer that is
-not `201`. Give
-`baseUrl` as the final URL — `https://` if the server redirects `http://`
-there — or nothing reaches the server.
+not `201`. Give `baseUrl` as the final URL — `https://` if the server
+redirects `http://` there — or nothing reaches the server.
 
 ## Keys
 
