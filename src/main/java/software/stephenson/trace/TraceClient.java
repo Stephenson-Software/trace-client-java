@@ -243,7 +243,10 @@ public final class TraceClient {
      * at {@code version}, reporting to the trace server at {@code baseUrl}.
      * The version is sent as the tag {@code version} on every event; a blank
      * one, or one longer than {@value #MAX_TAG_LENGTH} characters, is an
-     * {@link IllegalArgumentException}.
+     * {@link IllegalArgumentException}. Redirects are not followed, so
+     * {@code baseUrl} must be the final URL (e.g. {@code https://} when the
+     * server redirects {@code http://} there); otherwise every report is
+     * dropped and logged at {@code FINE}.
      */
     public static Builder builder(String baseUrl, String application, String version) {
         return new Builder(baseUrl, application, version);
