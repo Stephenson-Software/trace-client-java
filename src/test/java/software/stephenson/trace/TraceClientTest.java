@@ -13,6 +13,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -392,6 +393,19 @@ class TraceClientTest {
         assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled: false", "enabled: true")).disables);
         assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("# enabled: true", "enabled: false")).disables,
                 "a commented-out line is not the first one");
+    }
+
+    @Test
+    void serverWideConfig_aValuelessEnabledLineIsSkippedButACommentOnlyOneIsTheSwitch() {
+        // Characterizes current behaviour, which issue #27 questions:
+        // ENABLED_LINE needs a non-blank value, so a bare "enabled:" is
+        // passed over and a later line is the switch; but after
+        // "enabled: # ..." the captured value is "#", which is not off, so
+        // that line is the switch and a later one is ignored.
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled:", "enabled: false")).disables);
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled:   ", "enabled: false")).disables);
+        assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled: # set below", "enabled: false")).disables);
+        assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled:")).disables, "a bare enabled: alone is enabled");
     }
 
     @Test
@@ -1241,6 +1255,56 @@ class TraceClientTest {
         Map<String, String> tags = Collections.singletonMap("name", "home");
         assertSame(tags, TraceClient.withServerWideTags(tags, Collections.<String, String>emptyMap()));
         assertNull(TraceClient.withServerWideTags(null, Collections.<String, String>emptyMap()));
+    }
+
+    @Test
+    void withServerWideTags_dropsNullTagsLetsTheEventWinAndNeverModifiesTheCallersMap() {
+        // Arrange
+        Map<String, String> tags = new LinkedHashMap<>();
+        tags.put("name", "home");
+        tags.put("nullValue", null);
+        tags.put(null, "nullKey");
+        tags.put("ci", "the-events-own");
+        Map<String, String> serverWide = new LinkedHashMap<>();
+        serverWide.put("ci", "true");
+        serverWide.put("env", "staging");
+
+        // Act
+        Map<String, String> merged = TraceClient.withServerWideTags(tags, serverWide);
+
+        // Assert
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("name", "home");
+        expected.put("ci", "the-events-own");
+        expected.put("env", "staging");
+        assertEquals(expected, merged);
+        assertEquals(new ArrayList<>(expected.keySet()), new ArrayList<>(merged.keySet()), "event tags first, then server-wide");
+        assertEquals(4, tags.size(), "the caller's map is not modified");
+        assertEquals(serverWide, TraceClient.withServerWideTags(null, serverWide), "an event with no tags gets the server-wide ones");
+    }
+
+    @Test
+    void withServerWideTags_addsNoneToAnEventAlreadyAtOrOverMaxTags() {
+        // Arrange
+        Map<String, String> atMax = new LinkedHashMap<>();
+        for (int i = 0; i < TraceClient.MAX_TAGS; i++) {
+            atMax.put("e" + i, "v");
+        }
+        Map<String, String> overMax = new LinkedHashMap<>(atMax);
+        overMax.put("version", "1.2.3"); // what withVersion does today, see issue #13
+        Map<String, String> oneShort = new LinkedHashMap<>(atMax);
+        oneShort.remove("e0");
+        Map<String, String> serverWide = new LinkedHashMap<>();
+        serverWide.put("ci", "true");
+        serverWide.put("env", "staging");
+
+        // Act + Assert
+        assertEquals(atMax, TraceClient.withServerWideTags(atMax, serverWide));
+        assertEquals(overMax, TraceClient.withServerWideTags(overMax, serverWide), "the cap adds nothing, and drops nothing either");
+        Map<String, String> filled = TraceClient.withServerWideTags(oneShort, serverWide);
+        assertEquals(TraceClient.MAX_TAGS, filled.size());
+        assertEquals("true", filled.get("ci"));
+        assertFalse(filled.containsKey("env"), "only the first server-wide tag fits");
     }
 
     @Test
