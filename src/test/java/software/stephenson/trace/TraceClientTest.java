@@ -397,10 +397,11 @@ class TraceClientTest {
 
     @Test
     void serverWideConfig_aValuelessEnabledLineIsSkippedButACommentOnlyOneIsTheSwitch() {
-        // Characterizes current behaviour, which issue #27 questions: ENABLED_LINE needs a non-blank
-        // value, so a bare "enabled:" is passed over and a later line is the
-        // switch; but after "enabled: # ..." the captured value is "#", which
-        // is not off, so that line is the switch and a later one is ignored.
+        // Characterizes current behaviour, which issue #27 questions:
+        // ENABLED_LINE needs a non-blank value, so a bare "enabled:" is
+        // passed over and a later line is the switch; but after
+        // "enabled: # ..." the captured value is "#", which is not off, so
+        // that line is the switch and a later one is ignored.
         assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled:", "enabled: false")).disables);
         assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled:   ", "enabled: false")).disables);
         assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled: # set below", "enabled: false")).disables);
