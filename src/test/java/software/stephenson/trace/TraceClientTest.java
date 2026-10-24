@@ -595,6 +595,75 @@ class TraceClientTest {
     }
 
     @Test
+    void close_whenInterruptedReturnsAtOnceAndKeepsTheInterruptFlag() throws Exception {
+        // Arrange
+        // A server holding a request, so close() would otherwise wait out
+        // the whole drain timeout. A host shutting down on an interrupt must
+        // not wait that long, and must still see that it was interrupted.
+        CountDownLatch inFlight = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        HttpServer slow = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        slow.createContext("/", exchange -> {
+            inFlight.countDown();
+            try { release.await(15, TimeUnit.SECONDS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            exchange.sendResponseHeaders(201, -1);
+            exchange.close();
+        });
+        slow.start();
+        TraceClient client = TraceClient.builder("http://127.0.0.1:" + slow.getAddress().getPort(), "MyCli", "1.2.3").key("k").build();
+        client.report("startup");
+        assertTrue(inFlight.await(5, TimeUnit.SECONDS), "the report should reach the server");
+
+        // Act
+        Thread.currentThread().interrupt();
+        long before = System.nanoTime();
+        client.close();
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        boolean stillInterrupted = Thread.interrupted(); // clears it, so later tests run uninterrupted
+
+        // Assert
+        assertTrue(stillInterrupted, "close() must restore the interrupt it swallowed");
+        assertTrue(elapsedMs < 2_000, "close() took " + elapsedMs + " ms; an interrupt must cut the drain short");
+        release.countDown();
+        slow.stop(0);
+    }
+
+    @Test
+    void report_sendsFromOneDaemonThreadNamedForTheApplication() throws Exception {
+        // Arrange
+        // A server holding the first request, so the sender thread is alive
+        // and busy while the rest queue behind it.
+        CountDownLatch inFlight = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        HttpServer slow = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        slow.createContext("/", exchange -> {
+            inFlight.countDown();
+            try { release.await(15, TimeUnit.SECONDS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            exchange.sendResponseHeaders(201, -1);
+            exchange.close();
+        });
+        slow.start();
+        TraceClient client = TraceClient.builder("http://127.0.0.1:" + slow.getAddress().getPort(), "ThreadProbe", "1.2.3")
+                .key("k").build();
+
+        // Act
+        for (int i = 0; i < 5; i++) {
+            client.report("startup");
+        }
+        assertTrue(inFlight.await(5, TimeUnit.SECONDS), "the first report should reach the server");
+        List<Thread> senders = Thread.getAllStackTraces().keySet().stream()
+                .filter(thread -> thread.getName().equals("trace-client/ThreadProbe"))
+                .collect(Collectors.toList());
+
+        // Assert
+        assertEquals(1, senders.size(), "one sender thread, however many reports wait");
+        assertTrue(senders.get(0).isDaemon(), "a daemon thread never keeps the host's JVM from exiting");
+        release.countDown();
+        client.close();
+        slow.stop(0);
+    }
+
+    @Test
     void close_isSafeToCallTwice() throws Exception {
         // Arrange
         TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
