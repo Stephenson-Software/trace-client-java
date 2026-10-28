@@ -923,9 +923,9 @@ public final class TraceClient {
      * Sends every count still being coalesced (see {@link #report(String,
      * Double, Map)}), then stops the sending thread, giving reports already
      * queued up to {@value #READ_TIMEOUT_MS} ms in total to be sent first.
-     * A program that reports and then exits within milliseconds -- a CLI -- would otherwise
-     * lose its one event to the race between queueing it and the thread
-     * picking it up. The bound still holds: an unreachable server delays exit
+     * A program that reports and then exits within milliseconds -- a CLI --
+     * would otherwise lose its one event to the race between queueing it
+     * and the thread picking it up. The bound still holds: an unreachable server delays exit
      * by at most the timeout, never a hang; whatever has not been sent by
      * then is dropped. Safe to call more than once, and on a disabled client.
      */
