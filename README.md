@@ -138,7 +138,45 @@ generates, reads or writes an ID.
 | **Returns immediately** | The HTTP call runs on one daemon thread the client owns. A Spigot plugin can report from the server thread and no tick waits on the network. |
 | **Never throws** | A server that is down, slow, or rejecting the key is a dropped report, not an exception in your program. Drops are logged at `FINE` if you gave a logger, otherwise not at all. |
 | **Bounded** | At most 256 reports wait to be sent; past that, new ones are dropped without a log line, even at `FINE`. A trace server that is unreachable for a week costs a few kilobytes, not your heap. |
+| **Throttled** | Repeats of one event within a minute are counted, not sent: the first goes out at once, the rest as one event when the minute is up. See [below](#repeated-events-are-coalesced). |
 | **`close()` drains** | Reports already queued get up to the client timeout (5 s total) to be sent before the thread stops, so a CLI that reports and exits at once does not lose its event. Still bounded: an unreachable server delays exit by at most the timeout. |
+
+## Repeated events are coalesced
+
+Since 0.7.0, a program cannot flood the trace server, however often it
+reports. Before, one server whose `/power` command was being run every
+100 ms — another plugin dispatching it — sent hundreds of thousands of
+`command` events in a few days, one per run.
+
+- An event is its name, value and tags (once `version`, `install` and any
+  server-wide tags are added; tag order does not matter). The first report of
+  an event is sent at once and opens a **60-second window**.
+- Identical reports inside the window are only counted. When the window
+  closes, a count above zero is sent as **one more event**: the same name
+  and tags, plus the tag `coalesced` with the count — and the count as its
+  `value` when the event had no value. An event that has a value keeps it,
+  since it stands for that many more of the same value.
+- A window that sent a count opens the next one, so an event repeated
+  without pause costs one report a minute. A window that counted nothing
+  just ends.
+- `close()` sends every count still open, inside the same 5-second bound.
+- `startup` is never coalesced or held back.
+- At most 256 distinct events are counted at once. A new event while 256 are
+  being counted is dropped without a log line, like a report that finds the
+  queue full, so memory stays bounded even for a program that reports a new
+  tag every call.
+
+So the number of times something happened is the sum, over stored events,
+of `value` for events tagged `coalesced` and 1 for the rest — for a valueless
+event like `command`, simply `SUM(COALESCE(value, 1))`. Counting rows still
+works for "was it used, by how many servers"; it now undercounts "how many
+times", by design.
+
+A minute is long enough that a command dispatched every tick is one event a
+minute instead of 1,200, and short enough that a person trying a command
+sees it on the trace server at once (the first report is never delayed) and
+the count soon after. The server buckets by day, so nothing it shows is
+finer than that anyway.
 
 ## Opting out
 
@@ -213,7 +251,7 @@ plugins already vendor bStats' `Metrics.java`.
 <dependency>
     <groupId>com.github.Stephenson-Software</groupId>
     <artifactId>trace-client-java</artifactId>
-    <version>0.6.1</version>
+    <version>0.7.0</version>
 </dependency>
 ```
 
