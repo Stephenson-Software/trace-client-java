@@ -524,8 +524,10 @@ class TraceClientTest {
         int flood = TraceClient.QUEUE_CAPACITY * 3;
 
         // Act
+        // startup, because it is never coalesced: every one of these goes
+        // to the queue, so the queue is all that bounds them.
         for (int i = 0; i < flood; i++) {
-            client.report("flood");
+            client.report("startup");
         }
         release.countDown();
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
@@ -1888,6 +1890,213 @@ class TraceClientTest {
 
     private static Map<String, String> tagsOf(String content) {
         return TraceClient.parseServerWideConfig(Arrays.asList(content.split("\n", -1))).tags;
+    }
+
+    /** Waits until the shared server has received {@code count} reports, or 5 s pass. */
+    private void awaitReceived(int count) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (received.size() < count && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+    }
+
+    @Test
+    void coalesce_sendsTheFirstAtOnceAndTheRepeatsAsOneCountedEventWhenTheWindowCloses() throws Exception {
+        // Arrange
+        // The flood that prompted this: another plugin dispatching /power
+        // every 100 ms, each one a command event.
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
+                .coalesceWindowMillis(1_000).build();
+        Map<String, String> power = Collections.singletonMap("name", "power");
+
+        // Act
+        for (int i = 0; i < 50; i++) {
+            client.report("command", null, power);
+        }
+
+        // Assert
+        assertTrue(arrived.await(5, TimeUnit.SECONDS), "the first report goes out at once");
+        Thread.sleep(200);
+        assertEquals(1, received.size(), "the repeats wait for the window to close");
+        awaitReceived(2);
+        assertEquals(2, received.size(), "one event for all 49 repeats");
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"command\",\"tags\":{\"name\":\"power\",\"version\":\"1.2.3\"}}",
+                received.get(0).body);
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":49.0,"
+                        + "\"tags\":{\"name\":\"power\",\"version\":\"1.2.3\",\"coalesced\":\"49\"}}",
+                received.get(1).body);
+        client.close();
+        assertEquals(2, received.size(), "nothing was left to flush");
+    }
+
+    @Test
+    void coalesce_aSteadyFloodIsOneEventPerWindowAndAQuietWindowEnds() throws Exception {
+        // Arrange
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
+                .coalesceWindowMillis(300).build();
+
+        // Act
+        // About four windows of a report every 10 ms, then quiet.
+        long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1_200);
+        int reports = 0;
+        while (System.nanoTime() < until) {
+            client.report("command", null, Collections.singletonMap("name", "power"));
+            reports++;
+            Thread.sleep(10);
+        }
+        long quiet = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (client.coalescing() > 0 && System.nanoTime() < quiet) {
+            Thread.sleep(20);
+        }
+
+        // Assert
+        assertEquals(0, client.coalescing(), "a window that counted nothing ends");
+        int sent = received.size();
+        assertTrue(sent >= 3 && sent <= 7, "about one event per 300 ms window, but sent " + sent + " for " + reports);
+        long total = 1;
+        for (Received request : received.subList(1, sent)) {
+            java.util.regex.Matcher count = java.util.regex.Pattern.compile("\"coalesced\":\"(\\d+)\"").matcher(request.body);
+            assertTrue(count.find(), "every event after the first is a count: " + request.body);
+            total += Long.parseLong(count.group(1));
+        }
+        assertEquals(reports, total, "the counts add up to every report");
+        client.close();
+        assertEquals(sent, received.size(), "nothing was left to flush");
+    }
+
+    @Test
+    void close_sendsEveryCountStillOpen() throws Exception {
+        // Arrange
+        // The real window, a minute: only close() can send these counts.
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+        for (int i = 0; i < 10; i++) {
+            client.report("command", null, Collections.singletonMap("name", "home"));
+        }
+        for (int i = 0; i < 3; i++) {
+            client.report("command", null, Collections.singletonMap("name", "spawn"));
+        }
+        client.report("command", null, Collections.singletonMap("name", "once"));
+
+        // Act
+        long before = System.nanoTime();
+        client.close();
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+
+        // Assert
+        assertTrue(elapsedMs < 5_000, "close() must not wait for the window: took " + elapsedMs + " ms");
+        List<String> bodies = received.stream().map(r -> r.body).collect(Collectors.toList());
+        assertEquals(5, bodies.size(), "three first reports and two counts: " + bodies);
+        assertTrue(bodies.contains("{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":9.0,"
+                + "\"tags\":{\"name\":\"home\",\"version\":\"1.2.3\",\"coalesced\":\"9\"}}"), bodies.toString());
+        assertTrue(bodies.contains("{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":2.0,"
+                + "\"tags\":{\"name\":\"spawn\",\"version\":\"1.2.3\",\"coalesced\":\"2\"}}"), bodies.toString());
+        assertEquals(1, bodies.stream().filter(b -> b.contains("\"once\"")).count(), "nothing to count, nothing more sent");
+    }
+
+    @Test
+    void coalesce_keysOnNameValueAndTagsButNotTagOrder() throws Exception {
+        // Arrange
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+        Map<String, String> ab = new LinkedHashMap<>();
+        ab.put("a", "1");
+        ab.put("b", "2");
+        Map<String, String> ba = new LinkedHashMap<>();
+        ba.put("b", "2");
+        ba.put("a", "1");
+
+        // Act
+        client.report("command", null, ab);
+        client.report("command", null, ba); // the same event
+        client.report("command", 2.5, ab); // a different value: a different event
+        client.report("command", 2.5, ab);
+        client.report("command", 2.5, ab);
+        client.report("other", null, ab); // a different name
+        client.report("command", null, Collections.singletonMap("a", "1")); // different tags
+        client.report("command", Double.NaN, ab); // NaN is sent as no value: the first event again
+        awaitReceived(4);
+        Thread.sleep(200);
+        int sentAtOnce = received.size();
+        client.close();
+
+        // Assert
+        assertEquals(4, sentAtOnce, "one first report per distinct event");
+        List<String> bodies = received.stream().map(r -> r.body).collect(Collectors.toList());
+        assertEquals(6, bodies.size(), bodies.toString());
+        assertTrue(bodies.contains("{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":2.0,"
+                + "\"tags\":{\"a\":\"1\",\"b\":\"2\",\"version\":\"1.2.3\",\"coalesced\":\"2\"}}"), bodies.toString());
+        assertTrue(bodies.contains("{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":2.5,"
+                        + "\"tags\":{\"a\":\"1\",\"b\":\"2\",\"version\":\"1.2.3\",\"coalesced\":\"2\"}}"),
+                "an event with a value keeps it; the count is the tag: " + bodies);
+    }
+
+    @Test
+    void coalesce_neverHoldsBackStartup() throws Exception {
+        // Arrange
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+
+        // Act
+        for (int i = 0; i < 5; i++) {
+            client.report("startup");
+        }
+        awaitReceived(5);
+
+        // Assert
+        assertEquals(5, received.size(), "every startup goes out at once");
+        assertEquals(0, client.coalescing(), "startup is never counted");
+        client.close();
+        assertEquals(5, received.size());
+    }
+
+    @Test
+    void coalesce_countsAtMostMaxCoalescedEventsAndDropsNewOnesBeyond() throws Exception {
+        // Arrange
+        // Nothing listening, so the sends fail fast and the test is about
+        // memory alone: a new name every call must not grow without bound.
+        TraceClient client = TraceClient.builder("http://127.0.0.1:1", "MyPlugin", "1.2.3").key("k").build();
+
+        // Act
+        for (int i = 0; i < TraceClient.MAX_COALESCED_EVENTS * 4; i++) {
+            client.report("command", null, Collections.singletonMap("name", "c" + i));
+            client.report("command", null, Collections.singletonMap("name", "c" + i));
+        }
+
+        // Assert
+        assertEquals(TraceClient.MAX_COALESCED_EVENTS, client.coalescing());
+        assertDoesNotThrow(() -> client.report("startup"), "startup still goes to the queue");
+        client.close();
+        assertEquals(0, client.coalescing(), "close() lets go of every count");
+    }
+
+    @Test
+    void coalesce_afterCloseNothingIsCountedOrSent() throws Exception {
+        // Arrange
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+        client.close();
+
+        // Act
+        client.report("command");
+        client.report("command");
+
+        // Assert
+        assertEquals(0, client.coalescing());
+        assertFalse(arrived.await(300, TimeUnit.MILLISECONDS), "nothing should be sent after close()");
+    }
+
+    @Test
+    void withCount_addsTheCountOnlyWhenThereIsRoomAndNoneAlready() {
+        Map<String, String> tags = new LinkedHashMap<>();
+        tags.put("version", "1");
+        assertEquals("7", TraceClient.withCount(tags, 7).get(TraceClient.COALESCED_TAG));
+        assertFalse(tags.containsKey(TraceClient.COALESCED_TAG), "the caller's map is never modified");
+
+        Map<String, String> own = Collections.singletonMap(TraceClient.COALESCED_TAG, "mine");
+        assertEquals("mine", TraceClient.withCount(own, 7).get(TraceClient.COALESCED_TAG));
+
+        Map<String, String> full = new LinkedHashMap<>();
+        for (int i = 0; i < TraceClient.MAX_TAGS; i++) {
+            full.put("t" + i, "v");
+        }
+        assertEquals(TraceClient.MAX_TAGS, TraceClient.withCount(full, 7).size(), "never past the server's tag limit");
     }
 
     private static byte[] readAll(InputStream in) throws java.io.IOException {
