@@ -40,7 +40,7 @@ import java.util.regex.Pattern;
  * Reports usage events to a trace server, and never gets in the way of the
  * program doing the reporting.
  *
- * <p>Three properties hold for every call to {@link #report}:
+ * <p>Four properties hold for every call to {@link #report}:
  *
  * <ul>
  *   <li><b>It returns immediately.</b> The HTTP call happens on a single
@@ -774,7 +774,10 @@ public final class TraceClient {
      * <p>So the number of times an event happened is the sum, over the
      * events the server stored, of {@code value} where the
      * {@value #COALESCED_TAG} tag is present and 1 where it is not -- for
-     * a valueless event, simply {@code COALESCE(value, 1)}.
+     * a valueless event, simply {@code COALESCE(value, 1)}. The one
+     * exception: a count is not tagged when the event already carries
+     * {@value #MAX_TAGS} tags or its own {@value #COALESCED_TAG} tag, and
+     * such a count is then indistinguishable from a single report.
      *
      * <p>{@code startup} is never coalesced, nor held back: every one is
      * sent at once.
@@ -920,10 +923,9 @@ public final class TraceClient {
      * Sends every count still being coalesced (see {@link #report(String,
      * Double, Map)}), then stops the sending thread, giving reports already
      * queued up to {@value #READ_TIMEOUT_MS} ms in total to be sent first.
-     * A program that
-     * reports and then exits within milliseconds -- a CLI -- would otherwise
-     * lose its one event to the race between queueing it and the thread
-     * picking it up. The bound still holds: an unreachable server delays exit
+     * A program that reports and then exits within milliseconds -- a CLI --
+     * would otherwise lose its one event to the race between queueing it
+     * and the thread picking it up. The bound still holds: an unreachable server delays exit
      * by at most the timeout, never a hang; whatever has not been sent by
      * then is dropped. Safe to call more than once, and on a disabled client.
      */
@@ -1176,8 +1178,10 @@ public final class TraceClient {
          * {@code [trace]}: a report the server did not answer {@code 201}
          * to or that could not be delivered, and a server-wide config or
          * install ID file that could not be read or written in
-         * {@link #build()}. A report dropped because the queue is full is
-         * not mentioned. Optional; without one, nothing is logged.
+         * {@link #build()}. A report dropped because the queue is full, or
+         * because {@value TraceClient#MAX_COALESCED_EVENTS} other events are
+         * already being counted, is not mentioned. Optional; without one,
+         * nothing is logged.
          */
         public Builder logger(Logger logger) {
             this.logger = logger;

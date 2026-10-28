@@ -170,7 +170,9 @@ So the number of times something happened is the sum, over stored events,
 of `value` for events tagged `coalesced` and 1 for the rest — for a valueless
 event like `command`, simply `SUM(COALESCE(value, 1))`. Counting rows still
 works for "was it used, by how many servers"; it now undercounts "how many
-times", by design.
+times", by design. One exception: an event that already carries 32 tags,
+or its own `coalesced` tag, has its count sent without the `coalesced` tag
+(the server accepts at most 32), so that count reads as a single report.
 
 A minute is long enough that a command dispatched every tick is one event a
 minute instead of 1,200, and short enough that a person trying a command
@@ -267,7 +269,8 @@ Shade it into a plugin jar; it is one class.
 
 `value` is omitted when not given, and when it is NaN or infinite (neither
 is JSON); `tags` always holds at least `version`, and
-`install` whenever the client has an [installation ID](#every-event-carries-a-random-server-id). The server assigns the
+`install` whenever the client has an [installation ID](#every-event-carries-a-random-server-id), and the count of a
+[coalesced](#repeated-events-are-coalesced) event also carries `coalesced`. The server assigns the
 timestamp. A `201` is success; anything else is logged at `FINE` and dropped.
 
 Redirects are not followed. The body is streamed with a fixed length, so
