@@ -2083,6 +2083,77 @@ class TraceClientTest {
     }
 
     @Test
+    void coalesce_infiniteValuesAreTheSameEventAsNoValue() throws Exception {
+        // Arrange
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+
+        // Act
+        client.report("command");
+        client.report("command", Double.POSITIVE_INFINITY, null);
+        client.report("command", Double.NEGATIVE_INFINITY, null);
+        assertTrue(arrived.await(5, TimeUnit.SECONDS), "the first report goes out at once");
+        Thread.sleep(200);
+        int sentAtOnce = received.size();
+        int counting = client.coalescing();
+        client.close();
+
+        // Assert
+        assertEquals(1, sentAtOnce, "json() sends an infinite value as no value, so these are one event");
+        assertEquals(1, counting);
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":2.0,"
+                + "\"tags\":{\"version\":\"1.2.3\",\"coalesced\":\"2\"}}", received.get(1).body);
+    }
+
+    @Test
+    void coalesce_aTagWithANullKeyOrValueIsLeftOutOfTheEventAndNeverThrows() throws Exception {
+        // Arrange
+        // The key is built from a TreeMap, which throws on a null key: this
+        // is only safe because withVersion() drops such tags first.
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+        Map<String, String> withNulls = new HashMap<>();
+        withNulls.put("name", "home");
+        withNulls.put("nullValue", null);
+        withNulls.put(null, "nullKey");
+
+        // Act
+        assertDoesNotThrow(() -> client.report("command", null, withNulls));
+        assertDoesNotThrow(() -> client.report("command", null, withNulls));
+        client.report("command", null, Collections.singletonMap("name", "home"));
+        assertTrue(arrived.await(5, TimeUnit.SECONDS), "the first report goes out at once");
+        Thread.sleep(200);
+        int sentAtOnce = received.size();
+        client.close();
+
+        // Assert
+        assertEquals(1, sentAtOnce, "the same event as one without the null tags");
+        assertEquals(2, received.size(), "and one count for both repeats");
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"command\",\"tags\":{\"name\":\"home\",\"version\":\"1.2.3\"}}",
+                received.get(0).body);
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":2.0,"
+                + "\"tags\":{\"name\":\"home\",\"version\":\"1.2.3\",\"coalesced\":\"2\"}}", received.get(1).body);
+    }
+
+    @Test
+    void coalesce_aCountCarriesTheInstallAndServerWideTagsBeforeItsOwn(@TempDir Path plugins) throws Exception {
+        // Arrange
+        writeServerWideConfig(plugins, "tags:\n  ci: \"true\"\n");
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
+                .serverWideConfig(plugins.toFile()).build();
+
+        // Act
+        for (int i = 0; i < 4; i++) {
+            client.report("command", null, Collections.singletonMap("name", "home"));
+        }
+        client.close();
+
+        // Assert
+        assertEquals(2, received.size(), "the first report and one count");
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":3.0,"
+                        + "\"tags\":{\"name\":\"home\",\"version\":\"1.2.3\",\"install\":\"test-server\",\"ci\":\"true\",\"coalesced\":\"3\"}}",
+                received.get(1).body);
+    }
+
+    @Test
     void withCount_addsTheCountOnlyWhenThereIsRoomAndNoneAlready() {
         Map<String, String> tags = new LinkedHashMap<>();
         tags.put("version", "1");
