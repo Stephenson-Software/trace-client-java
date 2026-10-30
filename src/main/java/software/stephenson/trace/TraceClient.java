@@ -504,7 +504,8 @@ public final class TraceClient {
 
     /**
      * Ensures {@code <pluginsDirectory>/trace/config.yml} exists and reads its
-     * {@code enabled:} line and {@code tags:} block. No YAML library: the file
+     * {@code enabled:} line, {@code tags:} block and {@code server-id:} line.
+     * Not called when the environment opts out. No YAML library: the file
      * is ours, shallow, and a line scan is enough. Anything going wrong on
      * disk is logged at FINE and counts as enabled with no tags -- a
      * read-only plugins directory must not silently switch reporting off,
@@ -1123,8 +1124,9 @@ public final class TraceClient {
          * server-id: 0f8b6c1e-...
          * </pre>
          *
-         * <p>Both are read once, here. Optional; programs that are not
-         * plugins leave it unset.
+         * <p>All three are read once, here. When an environment variable has
+         * already turned reporting off, the file is neither read nor created.
+         * Optional; programs that are not plugins leave it unset.
          */
         public Builder serverWideConfig(File pluginsDirectory) {
             this.pluginsDirectory = pluginsDirectory;
