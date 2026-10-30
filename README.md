@@ -136,7 +136,7 @@ generates, reads or writes an ID.
 | Property | Meaning |
 |---|---|
 | **Returns immediately** | The HTTP call runs on one daemon thread the client owns. A Spigot plugin can report from the server thread and no tick waits on the network. |
-| **Never throws** | A server that is down, slow, or rejecting the key is a dropped report, not an exception in your program. Drops are logged at `FINE` if you gave a logger, otherwise not at all. |
+| **Never throws** | A server that is down, slow, or rejecting the key is a dropped report, not an exception in your program. Such a failure is logged at `FINE` if you gave a logger, otherwise not at all. |
 | **Bounded** | At most 256 reports wait to be sent; past that, new ones are dropped without a log line, even at `FINE`. A trace server that is unreachable for a week costs a few kilobytes, not your heap. |
 | **Throttled** | Repeats of one event within a minute are counted, not sent: the first goes out at once, the rest as one event when the minute is up. See [below](#repeated-events-are-coalesced). |
 | **`close()` drains** | Reports already queued get up to the client timeout (5 s total) to be sent before the thread stops, so a CLI that reports and exits at once does not lose its event. Still bounded: an unreachable server delays exit by at most the timeout. |
