@@ -189,7 +189,7 @@ last word. `build()` checks these in order; the first match wins and is what
 | Switch | `disabledReason()` |
 |---|---|
 | Environment: `TRACE_USAGE_REPORTING=off` (or `false`, `0`, `no`) or `DO_NOT_TRACK=1` (or `true`, `yes`), case-insensitive. Always checked. | `environment` |
-| Server-wide, when `serverWideConfig(pluginsDirectory)` was given: `enabled: false` in `plugins/trace/config.yml`. `build()` creates the file with `enabled: true` (and a commented-out [`tags:`](#server-wide-tags) example) if it is missing; afterwards the only change it ever makes is appending a [`server-id:`](#every-event-carries-a-random-server-id) line when an enabled client finds none. It is read with a line regex, no YAML library. An IO failure is logged at `FINE` and counts as enabled. | `server-wide config: plugins/trace/config.yml` |
+| Server-wide, when `serverWideConfig(pluginsDirectory)` was given: `enabled: false` in `plugins/trace/config.yml`. `build()` creates the file with `enabled: true` (and a commented-out [`tags:`](#server-wide-tags) example) if it is missing; afterwards the only change it ever makes is appending a [`server-id:`](#every-event-carries-a-random-server-id) line when an enabled client finds none. When the environment has already opted out, the file is neither read nor created. It is read with a line regex, no YAML library. An IO failure is logged at `FINE` and counts as enabled. | `server-wide config: plugins/trace/config.yml` |
 | The program's own setting: `enabled(false)`. | `config.yml` |
 | No key, or a blank one. | `no key` |
 
