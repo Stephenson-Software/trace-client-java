@@ -49,7 +49,8 @@ import java.util.regex.Pattern;
  *   <li><b>It never throws.</b> A server that is down, slow, or rejecting the
  *       key is a dropped report, not an exception in the host program. Failures
  *       are logged at {@link Level#FINE} if a logger was given, and otherwise
- *       not at all.</li>
+ *       not at all. A tags map that cannot be read is a dropped report too,
+ *       without a log line.</li>
  *   <li><b>It is bounded.</b> At most {@value #QUEUE_CAPACITY} reports wait to
  *       be sent; beyond that, new reports are dropped rather than accumulated,
  *       without a log line, even at {@link Level#FINE}. A trace server
@@ -758,7 +759,9 @@ public final class TraceClient {
     /**
      * Reports that {@code name} happened, with an optional numeric value and
      * optional string tags. Returns immediately; see the class comment. A
-     * {@code null} or blank name sends nothing.
+     * {@code null} or blank name sends nothing, and so does a {@code tags}
+     * map that fails while being read -- changed by another thread during
+     * the call, or holding a non-{@code String} through an unchecked cast.
      *
      * <p>Repeats are coalesced. The first report of an event -- its name,
      * value and tags, once {@code version}, {@code install} and the
@@ -790,9 +793,17 @@ public final class TraceClient {
         // json() leaves out a value that is NaN or infinite, so they are the
         // same event as no value at all.
         Double finite = value == null || value.isNaN() || value.isInfinite() ? null : value;
-        Map<String, String> merged =
-                withServerWideTags(withInstall(withVersion(tags, version), installId), serverWideTags);
-        String body = json(application, name, finite, merged);
+        Map<String, String> merged;
+        String body;
+        try {
+            merged = withServerWideTags(withInstall(withVersion(tags, version), installId), serverWideTags);
+            body = json(application, name, finite, merged);
+        } catch (RuntimeException unreadable) {
+            // The caller's map, read on the caller's thread: another thread
+            // changing it, or a raw map holding a non-String, fails here. Not
+            // logged, like the other drops on this thread: a handler may do IO.
+            return;
+        }
         synchronized (lock) {
             if (closed) {
                 return;
@@ -1180,10 +1191,10 @@ public final class TraceClient {
          * {@code [trace]}: a report the server did not answer {@code 201}
          * to or that could not be delivered, and a server-wide config or
          * install ID file that could not be read or written in
-         * {@link #build()}. A report dropped because the queue is full, or
-         * because {@value TraceClient#MAX_COALESCED_EVENTS} other events are
-         * already being counted, is not mentioned. Optional; without one,
-         * nothing is logged.
+         * {@link #build()}. A report dropped because the queue is full, because
+         * {@value TraceClient#MAX_COALESCED_EVENTS} other events are already
+         * being counted, or because its tags map could not be read, is not
+         * mentioned. Optional; without one, nothing is logged.
          */
         public Builder logger(Logger logger) {
             this.logger = logger;

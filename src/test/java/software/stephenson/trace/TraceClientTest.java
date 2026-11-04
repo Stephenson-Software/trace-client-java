@@ -13,13 +13,16 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -222,6 +225,58 @@ class TraceClientTest {
         assertTrue(log.await(5, TimeUnit.SECONDS));
         assertTrue(log.records.get(0).getMessage().contains("answered 401"), log.records.get(0).getMessage());
         client.close();
+    }
+
+    @Test
+    void report_aTagsMapChangedMidReadIsDroppedWithoutThrowing() throws Exception {
+        // Arrange
+        // What a HashMap does when another thread changes it during the
+        // copy, without needing to win that race.
+        Map<String, String> beingChanged = new AbstractMap<String, String>() {
+            @Override
+            public Set<Map.Entry<String, String>> entrySet() {
+                throw new ConcurrentModificationException();
+            }
+        };
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.unreadableTags");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").logger(logger).build();
+
+        // Act
+        assertDoesNotThrow(() -> client.report("command", 1.0, beingChanged));
+        client.report("after", null, null);
+
+        // Assert
+        assertTrue(arrived.await(5, TimeUnit.SECONDS), "the client should keep working");
+        assertEquals(1, client.coalescing(), "only the good report opened a window");
+        client.close();
+        assertEquals(1, received.size(), "the unreadable report is dropped");
+        assertTrue(received.get(0).body.contains("\"name\":\"after\""), received.get(0).body);
+        assertTrue(log.records.isEmpty(), "nothing is logged on the caller's thread: " + log.records);
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void report_aNonStringTagSmuggledInByARawMapIsDroppedWithoutThrowing() throws Exception {
+        // Arrange
+        // A Bukkit getValues(false) is a Map<String, Object>; one unchecked
+        // cast puts an Integer where json() needs a String.
+        Map raw = new HashMap();
+        raw.put("count", 5);
+        Map<String, String> tags = raw;
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+
+        // Act
+        assertDoesNotThrow(() -> client.report("command", null, tags));
+        client.report("after", null, null);
+
+        // Assert
+        assertTrue(arrived.await(5, TimeUnit.SECONDS), "the client should keep working");
+        client.close();
+        assertEquals(1, received.size(), "the unreadable report is dropped");
+        assertTrue(received.get(0).body.contains("\"name\":\"after\""), received.get(0).body);
     }
 
     @Test
