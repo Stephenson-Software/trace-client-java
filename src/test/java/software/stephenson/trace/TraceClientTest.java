@@ -13,6 +13,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -35,6 +36,7 @@ import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Drives the client against a real HTTP server on a loopback port -- the
@@ -1043,6 +1045,50 @@ class TraceClientTest {
     }
 
     @Test
+    void serverWideConfig_aByteThatIsNotUtf8LeavesReportingOnYet(@TempDir Path plugins) throws Exception {
+        // Characterizes current behaviour, which issue #40 questions: one
+        // byte of another encoding fails the whole read, which counts as an
+        // IO failure, so the enabled: false below it is never seen.
+        // Arrange
+        Path file = plugins.resolve("trace").resolve("config.yml");
+        Files.createDirectories(file.getParent());
+        Files.write(file, "# café\nenabled: false\n".getBytes(StandardCharsets.ISO_8859_1));
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.serverWideNotUtf8");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
+
+        // Act
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
+                .serverWideConfig(plugins.toFile()).logger(logger).build();
+
+        // Assert
+        assertTrue(client.isEnabled(), "the switch was not read");
+        assertTrue(log.await(1, TimeUnit.SECONDS), "the failure should be mentioned at FINE");
+        assertTrue(log.records.get(0).getMessage().contains("could not read server-wide config"),
+                log.records.get(0).getMessage());
+        client.close();
+    }
+
+    @Test
+    void serverWideConfig_aByteOrderMarkHidesAFirstLineEnabledFalseYet(@TempDir Path plugins) throws Exception {
+        // Characterizes current behaviour, which issue #40 questions: the
+        // mark is not whitespace to ENABLED_LINE, so the line does not match.
+        // Arrange
+        Path file = plugins.resolve("trace").resolve("config.yml");
+        Files.createDirectories(file.getParent());
+        Files.write(file, "﻿enabled: false\n".getBytes(StandardCharsets.UTF_8));
+
+        // Act
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
+                .serverWideConfig(plugins.toFile()).build();
+
+        // Assert
+        assertTrue(client.isEnabled(), "the switch was not recognised");
+        client.close();
+    }
+
+    @Test
     void environment_disablesAndWinsOverTheServerWideFile(@TempDir Path plugins) throws Exception {
         // Arrange
         // The file says on; the environment says off. The environment wins,
@@ -1245,6 +1291,26 @@ class TraceClientTest {
         expected.put("b", "back\\slash/solidusqother");
         expected.put("c", "single \\n stays");
         assertEquals(expected, tags);
+    }
+
+    @Test
+    void serverWideTags_dropKeysAndValuesWhoseQuoteIsNeverClosed() {
+        Map<String, String> tags = tagsOf("tags:\n"
+                + "  \"open-double: x\n"
+                + "  'open-single: x\n"
+                + "  \"mismatched': x\n"
+                + "  \": lone-quote\n"
+                + "  value: \"ends in a backslash\\\n"
+                + "  ok: fine\n");
+        assertEquals(Collections.singletonMap("ok", "fine"), tags);
+    }
+
+    @Test
+    void serverWideTags_aSingleQuotedValueTakesACommentButNothingElseAfterIt() {
+        Map<String, String> tags = tagsOf("tags:\n"
+                + "  a: 'x'  # comment after a quote\n"
+                + "  b: 'x' junk\n");
+        assertEquals(Collections.singletonMap("a", "x"), tags);
     }
 
     @Test
@@ -1577,6 +1643,40 @@ class TraceClientTest {
     }
 
     @Test
+    void installId_aConfigThatCannotBeAppendedToFallsBackToAnInMemoryIdAndIsLoggedFine(@TempDir Path plugins) throws Exception {
+        // Arrange
+        // The test above fails at the read. To fail at the append, the file
+        // has to read fine and refuse a write, even as root: /proc/version
+        // does, and has no enabled: or server-id: line in it.
+        Path readOnly = Paths.get("/proc/version");
+        assumeTrue(Files.isReadable(readOnly), "needs Linux's /proc");
+        Path config = Files.createDirectory(plugins.resolve("trace")).resolve("config.yml");
+        Files.createSymbolicLink(config, readOnly);
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.serverIdAppend");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
+
+        // Act
+        TraceClient first = assertDoesNotThrow(() -> TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
+                .serverWideConfig(plugins.toFile()).logger(logger).build());
+        TraceClient second = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").serverWideConfig(plugins.toFile()).build();
+        first.report("startup");
+
+        // Assert
+        assertTrue(arrived.await(5, TimeUnit.SECONDS));
+        first.close();
+        second.close();
+        assertTrue(first.isEnabled());
+        assertTrue(first.installId().matches(UUID_PATTERN), first.installId());
+        assertNotEquals(first.installId(), second.installId(), "nothing persisted: each process gets its own");
+        assertTrue(received.get(0).body.contains("\"install\":\"" + first.installId() + "\""), received.get(0).body);
+        assertTrue(log.await(1, TimeUnit.SECONDS), "the fallback should be mentioned at FINE");
+        assertEquals(Level.FINE, log.records.get(0).getLevel());
+        assertTrue(log.records.get(0).getMessage().contains("could not write server-id"), log.records.get(0).getMessage());
+    }
+
+    @Test
     void installId_anUnreadableConfigIsLoggedFineAndNotAppendedTo(@TempDir Path scratch) throws Exception {
         // Arrange: as above, a "plugins directory" that is a regular file.
         Path notADirectory = scratch.resolve("plugins");
@@ -1840,6 +1940,36 @@ class TraceClientTest {
     }
 
     @Test
+    void installIdFile_aWriteThatFailsYieldsAnInMemoryIdAndIsLoggedFine(@TempDir Path scratch) throws Exception {
+        // Arrange
+        // The test above fails at the read. A link into a directory that does
+        // not exist reads as "no such file", so the client goes on to write,
+        // and that fails too, even as root.
+        assumeTrue(File.separatorChar == '/', "needs POSIX symbolic links");
+        Path target = scratch.resolve("missing").resolve("trace-install-id");
+        Path link = Files.createSymbolicLink(scratch.resolve("trace-install-id"), target);
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.installIdFileWrite");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
+
+        // Act
+        TraceClient client = assertDoesNotThrow(() -> TraceClient.builder(baseUrl(), "MyCli", "1.2.3").key("k")
+                .installIdFile(link.toFile()).logger(logger).build());
+        client.report("startup");
+
+        // Assert
+        assertTrue(arrived.await(5, TimeUnit.SECONDS));
+        client.close();
+        assertTrue(client.installId().matches(UUID_PATTERN), client.installId());
+        assertTrue(received.get(0).body.contains("\"install\":\"" + client.installId() + "\""), received.get(0).body);
+        assertFalse(Files.exists(target));
+        assertTrue(log.await(1, TimeUnit.SECONDS), "the fallback should be mentioned at FINE");
+        assertEquals(Level.FINE, log.records.get(0).getLevel());
+        assertTrue(log.records.get(0).getMessage().contains("could not write install ID file"), log.records.get(0).getMessage());
+    }
+
+    @Test
     void installIdFromFile_leavesAnUnreadableFileAlone(@TempDir Path scratch) throws Exception {
         // A directory cannot be read as a file.
         Path directory = Files.createDirectory(scratch.resolve("dir"));
@@ -2017,6 +2147,37 @@ class TraceClientTest {
         assertEquals(reports, total, "the counts add up to every report");
         client.close();
         assertEquals(sent, received.size(), "nothing was left to flush");
+    }
+
+    @Test
+    void coalesce_aWindowThatClosesLeavesOneOpenedLaterToItsOwnDeadline() throws Exception {
+        // Arrange
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
+                .coalesceWindowMillis(2_000).build();
+        Map<String, String> early = Collections.singletonMap("name", "early");
+        Map<String, String> late = Collections.singletonMap("name", "late");
+
+        // Act
+        // Half a window apart, so the flush that closes the first finds the
+        // second still open.
+        client.report("command", null, early);
+        client.report("command", null, early);
+        Thread.sleep(1_000);
+        client.report("command", null, late);
+        client.report("command", null, late);
+        awaitReceived(3);
+
+        // Assert
+        assertEquals(3, received.size(), "two first reports and the early count");
+        assertTrue(received.get(2).body.contains("\"name\":\"early\"") && received.get(2).body.contains("\"coalesced\":\"1\""),
+                received.get(2).body);
+        Thread.sleep(200);
+        assertEquals(3, received.size(), "the late window has not closed yet");
+        awaitReceived(4);
+        assertEquals(4, received.size(), "it gets a flush of its own");
+        assertTrue(received.get(3).body.contains("\"name\":\"late\"") && received.get(3).body.contains("\"coalesced\":\"1\""),
+                received.get(3).body);
+        client.close();
     }
 
     @Test
