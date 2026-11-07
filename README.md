@@ -121,9 +121,10 @@ TraceClient.builder(url, "MyCli", version).key(key)
 **Precedence.** An explicit `installId(...)` wins over `installIdFile(...)`,
 which wins over the server-wide `server-id:` (the server-wide file then gains
 no `server-id:` line; its `enabled:` switch and `tags:` still apply). An
-event that passes its own `install` tag keeps it. `trace.installId()` returns
-the ID in use (`null` when disabled or when there is none), so a program can
-print it.
+event that passes its own `install` tag keeps it, and one that already
+carries 32 tags with `version`, the most the server accepts, goes out without
+the ID. `trace.installId()` returns the ID in use (`null` when disabled or
+when there is none), so a program can print it.
 
 `TraceClient.installIdFromFile(file)` is the same load-or-create step on its
 own, for a program that wants the ID for something else. **Called directly,
@@ -139,7 +140,7 @@ generates, reads or writes an ID.
 | **Never throws** | A server that is down, slow, or rejecting the key is a dropped report, not an exception in your program. Such a failure is logged at `FINE` if you gave a logger, otherwise not at all. A tags map that fails while being read — changed by another thread during the call, or holding a non-`String` through an unchecked cast — is a dropped report too, without a log line. |
 | **Bounded** | At most 256 reports wait to be sent; past that, new ones are dropped without a log line, even at `FINE`. A trace server that is unreachable for a week costs a few kilobytes, not your heap. |
 | **Throttled** | Repeats of one event within a minute are counted, not sent: the first goes out at once, the rest as one event when the minute is up. See [below](#repeated-events-are-coalesced). |
-| **`close()` drains** | Reports already queued get up to the client timeout (5 s total) to be sent before the thread stops, so a CLI that reports and exits at once does not lose its event. Still bounded: an unreachable server delays exit by at most the timeout. |
+| **`close()` drains** | Reports already queued get up to the client timeout (5 s total) to be sent before the thread stops, so a CLI that reports and exits at once does not lose its event. Still bounded: an unreachable server delays exit by at most the timeout. A report made after `close()` is dropped. |
 
 ## Repeated events are coalesced
 
@@ -160,6 +161,8 @@ reports. Before, one server whose `/power` command was being run every
   without pause costs one report a minute. A window that counted nothing
   just ends.
 - `close()` sends every count still open, inside the same 5-second bound.
+- A count goes through the same queue as any report. One that finds the queue
+  full is dropped without a log line, and what it counted is lost.
 - `startup` is never coalesced or held back.
 - At most 256 distinct events are counted at once. A new event while 256 are
   being counted is dropped without a log line, like a report that finds the
@@ -167,12 +170,15 @@ reports. Before, one server whose `/power` command was being run every
   tag every call.
 
 So the number of times something happened is the sum, over stored events,
-of `value` for events tagged `coalesced` and 1 for the rest — for a valueless
-event like `command`, simply `SUM(COALESCE(value, 1))`. Counting rows still
-works for "was it used, by how many servers"; it now undercounts "how many
-times", by design. One exception: an event that already carries 32 tags,
-or its own `coalesced` tag, has its count sent without the `coalesced` tag
-(the server accepts at most 32), so that count reads as a single report.
+of the `coalesced` tag for events that carry it and 1 for the rest. For an
+event reported without a value, the count is its `value` too, so that is
+simply `SUM(COALESCE(value, 1))`; for an event reported with a value, such as
+`command` with `1.0` in the example above, `value` is not the count, and only
+the tag says how many. Counting rows still works for "was it used, by how many
+servers"; it now undercounts "how many times", by design. Two exceptions: an
+event that already carries 32 tags has its count sent without the `coalesced`
+tag (the server accepts at most 32), so that count reads as a single report;
+and an event with its own `coalesced` tag keeps it, so that tag is not a count.
 
 A minute is long enough that a command dispatched every tick is one event a
 minute instead of 1,200, and short enough that a person trying a command
@@ -215,10 +221,11 @@ tags:
 
 - `tags:` starts at column 0 and is followed by indented `key: value` lines.
   Values may be double-quoted, single-quoted or bare; blank lines and `#`
-  comments inside the block are skipped, and so is any line indented
-  differently from the block's first entry. The block ends at the next line
-  that is not indented, or at the end of the file. An `enabled:` line inside
-  the block is a tag like any other, not the switch.
+  comments inside the block are skipped, at any indent, and so is any line
+  indented differently from the block's first entry. The block ends at the
+  next line that is not blank, a comment or indented, or at the end of the
+  file. An `enabled:` line inside the block is a tag like any other, not the
+  switch.
 - An event's own tag always wins, and the program's version is the event's
   own: a server-wide `version` never overwrites it.
 - Entries the trace server would reject are dropped one by one, never the
@@ -269,7 +276,8 @@ Shade it into a plugin jar; it is one class.
 
 `value` is omitted when not given, and when it is NaN or infinite (neither
 is JSON); `tags` always holds at least `version`, and
-`install` whenever the client has an [installation ID](#every-event-carries-a-random-server-id), and the count of a
+`install` whenever the client has an [installation ID](#every-event-carries-a-random-server-id) and the event is under
+32 tags, and the count of a
 [coalesced](#repeated-events-are-coalesced) event also carries `coalesced`. The server assigns the
 timestamp. A `201` is success; anything else is logged at `FINE` and dropped.
 
