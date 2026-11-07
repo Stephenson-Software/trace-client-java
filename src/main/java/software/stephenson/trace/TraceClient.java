@@ -74,7 +74,8 @@ import java.util.regex.Pattern;
  *       {@code 0}, {@code no}) or {@code DO_NOT_TRACK=1} (or {@code true},
  *       {@code yes}), case-insensitive -- reason {@code environment};</li>
  *   <li>the server-wide switch, when {@link Builder#serverWideConfig(File)}
- *       was given: {@code enabled: false} in {@code plugins/trace/config.yml}
+ *       was given: {@code enabled: false} (or {@code off}, {@code 0},
+ *       {@code no}, case-insensitive) in {@code plugins/trace/config.yml}
  *       -- reason {@code server-wide config: plugins/trace/config.yml};</li>
  *   <li>the program's own setting, {@link Builder#enabled(boolean)
  *       enabled(false)} -- reason {@code config.yml};</li>
@@ -105,7 +106,8 @@ import java.util.regex.Pattern;
  * server-wide {@code server-id:}; with none of them, no {@code install} tag
  * is sent. The ID is random: it names no person, account or address. A
  * disabled client never generates, reads or writes one. An event's own
- * {@code install} tag wins over it.
+ * {@code install} tag wins over it, and an event already at
+ * {@value #MAX_TAGS} tags with {@code version} goes out without it.
  *
  * <p>A disabled client is a no-op that costs nothing. Programs that run on
  * other people's machines should expose their own switch in their
@@ -393,7 +395,8 @@ public final class TraceClient {
      *
      * <p>Never throws: if the file exists but cannot be read, or cannot be
      * written, a fresh random ID is returned for this process only, and an
-     * unreadable file is left as it is.
+     * unreadable file is left as it is. The same goes for a {@code null}
+     * file or a blank path, which nothing is written to.
      *
      * <p><b>Called directly, this writes whatever the opt-outs say.</b> Pass
      * the file to {@link Builder#installIdFile(File)} instead to keep the
@@ -536,9 +539,10 @@ public final class TraceClient {
      * Reads the switch and the tags from the lines of the server-wide file.
      * The first {@code enabled:} line outside a {@code tags:} block is the
      * switch. A {@code tags:} line at column 0 opens a block of indented
-     * {@code key: value} lines, which ends at the next non-blank line that is
-     * not indented; blank and {@code #} lines inside it are skipped, as are
-     * lines indented differently from its first entry. Values may be bare,
+     * {@code key: value} lines, which ends at the next line that is not
+     * blank, a comment or indented; blank and {@code #} lines inside it are
+     * skipped, at any indent, as are lines indented differently from its
+     * first entry. Values may be bare,
      * double- or single-quoted. Entries the trace server would reject -- and
      * anything this reader does not understand -- are dropped, one by one,
      * and at most {@link #MAX_TAGS} are kept. The first {@code server-id:}
@@ -776,12 +780,16 @@ public final class TraceClient {
      * counted nothing ends. {@link #close()} sends every count still open.
      *
      * <p>So the number of times an event happened is the sum, over the
-     * events the server stored, of {@code value} where the
-     * {@value #COALESCED_TAG} tag is present and 1 where it is not -- for
-     * a valueless event, simply {@code COALESCE(value, 1)}. The one
-     * exception: a count is not tagged when the event already carries
-     * {@value #MAX_TAGS} tags or its own {@value #COALESCED_TAG} tag, and
-     * such a count is then indistinguishable from a single report.
+     * events the server stored, of the {@value #COALESCED_TAG} tag where it
+     * is present and 1 where it is not -- for an event reported without a
+     * value, simply {@code COALESCE(value, 1)}; an event reported with one
+     * keeps it, so only the tag holds the count. Two exceptions: a count is
+     * not tagged when the event already carries {@value #MAX_TAGS} tags, so
+     * it reads as a single report; and an event with its own
+     * {@value #COALESCED_TAG} tag keeps it, so that tag is not a count.
+     *
+     * <p>A count goes through the same queue as any report: one that finds
+     * it full is dropped, without a log line, and what it counted is lost.
      *
      * <p>{@code startup} is never coalesced, nor held back: every one is
      * sent at once.
@@ -939,7 +947,8 @@ public final class TraceClient {
      * would otherwise lose its one event to the race between queueing it
      * and the thread picking it up. The bound still holds: an unreachable server delays exit
      * by at most the timeout, never a hang; whatever has not been sent by
-     * then is dropped. Safe to call more than once, and on a disabled client.
+     * then is dropped. A report made after this is dropped too. Safe to call
+     * more than once, and on a disabled client.
      */
     public void close() {
         if (executor == null) {
@@ -1120,7 +1129,8 @@ public final class TraceClient {
          * in a Bukkit plugin), {@link #build()} makes sure
          * {@code plugins/trace/config.yml} exists -- creating it with
          * {@code enabled: true} if it is missing -- and honours
-         * {@code enabled: false} in it. Its optional {@code tags:} block is
+         * {@code enabled: false} (or {@code off}, {@code 0}, {@code no},
+         * case-insensitive) in it. Its optional {@code tags:} block is
          * added to every event this client reports, below the event's own
          * tags. Its {@code server-id:} line is sent as the tag
          * {@code install}; when an enabled client finds none, it appends one

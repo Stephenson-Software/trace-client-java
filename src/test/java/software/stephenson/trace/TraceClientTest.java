@@ -2210,6 +2210,54 @@ class TraceClientTest {
     }
 
     @Test
+    void close_aCountThatFindsTheQueueFullIsDropped() throws Exception {
+        // Arrange
+        // Hold the sending thread on the first report, so nothing behind it
+        // leaves the queue until close() has tried to queue the count.
+        CountDownLatch holding = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        List<String> bodies = new CopyOnWriteArrayList<>();
+        HttpServer slow = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        slow.createContext("/", exchange -> {
+            bodies.add(new String(readAll(exchange.getRequestBody()), StandardCharsets.UTF_8));
+            holding.countDown();
+            try {
+                release.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            exchange.sendResponseHeaders(201, -1);
+            exchange.close();
+        });
+        slow.start();
+        TraceClient client = TraceClient.builder("http://127.0.0.1:" + slow.getAddress().getPort(), "MyPlugin", "1.2.3")
+                .key("k").build();
+        client.report("command");
+        client.report("command"); // counted, so close() has a count to send
+        assertTrue(holding.await(5, TimeUnit.SECONDS), "the first report is in flight");
+        for (int i = 0; i < TraceClient.QUEUE_CAPACITY; i++) {
+            client.report("startup"); // never coalesced: every one takes a place in the queue
+        }
+
+        // Act
+        Thread closing = new Thread(client::close);
+        closing.start();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (client.coalescing() > 0 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertEquals(0, client.coalescing(), "close() has flushed");
+        release.countDown();
+        closing.join(10_000);
+
+        // Assert
+        assertFalse(closing.isAlive(), "close() returned");
+        assertTrue(bodies.size() > 1, "the queue behind the first report drained");
+        assertTrue(bodies.stream().noneMatch(b -> b.contains(TraceClient.COALESCED_TAG)), bodies.toString());
+        slow.stop(0);
+    }
+
+    @Test
     void coalesce_keysOnNameValueAndTagsButNotTagOrder() throws Exception {
         // Arrange
         TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
