@@ -336,6 +336,47 @@ class TraceClientTest {
     }
 
     @Test
+    void builder_namesWhatIsMissingInItsMessage() {
+        // Act
+        IllegalArgumentException noBaseUrl = assertThrows(IllegalArgumentException.class,
+                () -> TraceClient.builder("  ", "MyPlugin", "1.2.3"));
+        IllegalArgumentException noApplication = assertThrows(IllegalArgumentException.class,
+                () -> TraceClient.builder("http://x", null, "1.2.3"));
+        IllegalArgumentException noVersion = assertThrows(IllegalArgumentException.class,
+                () -> TraceClient.builder("http://x", "MyPlugin", ""));
+        IllegalArgumentException allMissing = assertThrows(IllegalArgumentException.class,
+                () -> TraceClient.builder(null, null, null));
+
+        // Assert
+        assertEquals("baseUrl is required", noBaseUrl.getMessage());
+        assertEquals("application is required", noApplication.getMessage());
+        assertEquals("version is required", noVersion.getMessage());
+        assertEquals("baseUrl is required", allMissing.getMessage(), "checked in argument order");
+    }
+
+    @Test
+    void builder_rejectsAnOverlongVersionAndAcceptsOneAtTheLimit() throws Exception {
+        // Arrange
+        StringBuilder max = new StringBuilder();
+        for (int i = 0; i < TraceClient.MAX_TAG_LENGTH; i++) {
+            max.append('9');
+        }
+
+        // Act
+        IllegalArgumentException tooLong = assertThrows(IllegalArgumentException.class,
+                () -> TraceClient.builder(baseUrl(), "MyPlugin", max + "9"));
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "  " + max + "  ").key("k").build();
+        client.report("startup");
+
+        // Assert
+        assertEquals("version is longer than " + TraceClient.MAX_TAG_LENGTH + " characters", tooLong.getMessage());
+        assertTrue(arrived.await(5, TimeUnit.SECONDS), "a version at the limit is accepted");
+        assertTrue(received.get(0).body.contains("\"version\":\"" + max + "\""),
+                "surrounding whitespace does not count and is not sent: " + received.get(0).body);
+        client.close();
+    }
+
+    @Test
     void report_tagsACommandWithTheProgramVersionTrimmed() throws Exception {
         // Arrange
         TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", " 2.0.0-SNAPSHOT ").key("k").build();
