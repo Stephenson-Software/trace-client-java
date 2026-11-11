@@ -29,6 +29,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
+import java.util.function.IntConsumer;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -2332,6 +2333,102 @@ class TraceClientTest {
         assertTrue(bodies.contains("{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":2.5,"
                         + "\"tags\":{\"a\":\"1\",\"b\":\"2\",\"version\":\"1.2.3\",\"coalesced\":\"2\"}}"),
                 "an event with a value keeps it; the count is the tag: " + bodies);
+    }
+
+    /** Starts {@code threads} threads that each run {@code work} with their index, all at once, and waits for them. */
+    private static void runAtOnce(int threads, IntConsumer work) throws InterruptedException {
+        CountDownLatch start = new CountDownLatch(1);
+        List<Thread> started = new ArrayList<>();
+        for (int t = 0; t < threads; t++) {
+            final int index = t;
+            Thread thread = new Thread(() -> {
+                try {
+                    start.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                work.accept(index);
+            });
+            thread.start();
+            started.add(thread);
+        }
+        start.countDown();
+        for (Thread thread : started) {
+            thread.join(10_000);
+            assertFalse(thread.isAlive(), "a reporting thread did not finish");
+        }
+    }
+
+    @Test
+    void coalesce_reportsFromManyThreadsAtOnceAreEachCountedExactlyOnce() throws Exception {
+        // Arrange
+        // report() runs on the host's threads -- a plugin's async tasks
+        // beside the main thread -- so the window it shares must neither lose
+        // a repeat nor count one twice.
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+        Map<String, String> power = Collections.singletonMap("name", "power");
+        int threads = 8;
+        int each = 500;
+
+        // Act
+        // The real window, a minute: everything after the first report is
+        // counted until close() sends the count.
+        runAtOnce(threads, index -> {
+            for (int i = 0; i < each; i++) {
+                client.report("command", null, power);
+            }
+        });
+        client.close();
+
+        // Assert
+        List<String> bodies = received.stream().map(r -> r.body).collect(Collectors.toList());
+        assertEquals(2, bodies.size(), "one first report and one count: " + bodies);
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"command\",\"tags\":{\"name\":\"power\",\"version\":\"1.2.3\"}}",
+                bodies.get(0));
+        int repeats = threads * each - 1;
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":" + (double) repeats + ","
+                        + "\"tags\":{\"name\":\"power\",\"version\":\"1.2.3\",\"coalesced\":\"" + repeats + "\"}}",
+                bodies.get(1));
+    }
+
+    @Test
+    void coalesce_distinctEventsFromManyThreadsAtOnceAreEachSentOnceAndCountedOnce() throws Exception {
+        // Arrange
+        // Every thread opens windows of its own at the same moment, so the
+        // windows map and the queue count are changed from all of them at
+        // once. Well under QUEUE_CAPACITY and MAX_COALESCED_EVENTS, so
+        // nothing may be dropped.
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+        int threads = 8;
+        int events = 5;
+        assertTrue(2 * threads * events <= TraceClient.QUEUE_CAPACITY);
+        assertTrue(threads * events <= TraceClient.MAX_COALESCED_EVENTS);
+
+        // Act
+        runAtOnce(threads, index -> {
+            for (int repeat = 0; repeat < 3; repeat++) {
+                for (int e = 0; e < events; e++) {
+                    client.report("command", null, Collections.singletonMap("name", index + "-" + e));
+                }
+            }
+        });
+        client.close();
+
+        // Assert
+        List<String> bodies = received.stream().map(r -> r.body).collect(Collectors.toList());
+        assertEquals(2 * threads * events, bodies.size(), "a first report and a count per event: " + bodies);
+        for (int t = 0; t < threads; t++) {
+            for (int e = 0; e < events; e++) {
+                String tags = "\"tags\":{\"name\":\"" + t + "-" + e + "\",\"version\":\"1.2.3\"";
+                assertEquals(1, bodies.stream().filter(b -> b.equals(
+                        "{\"application\":\"MyPlugin\",\"name\":\"command\"," + tags + "}}")).count(),
+                        "one first report of " + t + "-" + e + ": " + bodies);
+                assertEquals(1, bodies.stream().filter(b -> b.equals(
+                        "{\"application\":\"MyPlugin\",\"name\":\"command\",\"value\":2.0," + tags + ",\"coalesced\":\"2\"}}")).count(),
+                        "one count of 2 for " + t + "-" + e + ": " + bodies);
+            }
+        }
     }
 
     @Test
