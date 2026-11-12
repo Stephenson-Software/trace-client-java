@@ -82,7 +82,7 @@ in memory for that run only — `build()` still never throws.
 **Resetting it.** Delete the `server-id:` line; the next start writes a new
 one. Or set your own value (letters, digits, `_`, `.`, `-`, starting with a
 letter or digit; at most 255 characters; bare or quoted). Only a `server-id:`
-line at the start of a line, outside the `tags:` block, counts, and the first
+line that starts at column 0, outside the `tags:` block, counts, and the first
 valid one wins. A `server-id:` line that is indented, inside `tags:`, or whose
 value is anything else is ignored, and if no valid one is left, the next start
 appends a new one to the end of the file.
