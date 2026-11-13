@@ -1290,6 +1290,45 @@ class TraceClientTest {
     }
 
     @Test
+    void serverWideTags_aSecondTagsBlockAddsToTheFirstAndTheFirstEntryOfAKeyWins() {
+        // Arrange
+        // Two blocks, as an operator might leave after pasting an example
+        // below their own; the second is indented differently from the first.
+        String content = "tags:\n"
+                + "  ci: \"true\"\n"
+                + "  env: staging\n"
+                + "enabled: true\n"
+                + "tags:\n"
+                + "    env: prod\n"
+                + "    region: eu\n";
+
+        // Act
+        TraceClient.ServerWideConfig config = TraceClient.parseServerWideConfig(Arrays.asList(content.split("\n", -1)));
+
+        // Assert
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put("ci", "true");
+        expected.put("env", "staging");
+        expected.put("region", "eu");
+        assertEquals(expected, config.tags, "each block takes its own indent; a key already read is not replaced");
+        assertFalse(config.disables);
+    }
+
+    @Test
+    void serverWideTags_theTagsLineIsCaseSensitiveAndAllowsSpaceBeforeTheColon() {
+        // Arrange, Act and Assert
+        assertEquals(Collections.singletonMap("ci", "true"), tagsOf("tags :\n  ci: \"true\"\n"));
+        assertTrue(tagsOf("Tags:\n  ci: \"true\"\n").isEmpty(), "Tags: is not tags:");
+        assertTrue(tagsOf("tags: ci\n  env: prod\n").isEmpty(), "a value on the tags: line is not a block");
+
+        // Under a line that does not open a block, an indented enabled: is
+        // outside any tags: block, so it is the switch.
+        TraceClient.ServerWideConfig config = TraceClient.parseServerWideConfig(Arrays.asList("Tags:", "  enabled: false"));
+        assertTrue(config.disables);
+        assertTrue(config.tags.isEmpty());
+    }
+
+    @Test
     void serverWideTags_dropEntriesTheServerWouldRejectOrThatAreNotUnderstood() {
         StringBuilder longText = new StringBuilder();
         for (int i = 0; i < TraceClient.MAX_TAG_LENGTH + 1; i++) {
