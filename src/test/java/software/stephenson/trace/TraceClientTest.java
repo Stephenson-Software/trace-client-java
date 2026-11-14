@@ -1166,6 +1166,86 @@ class TraceClientTest {
     }
 
     @Test
+    void environment_eitherVariableAloneTurnsReportingOffWhateverTheOtherSays() {
+        // Arrange: one variable opts out, the other says something that is
+        // not an opt-out. Neither can cancel the other.
+        String[][] pairs = {
+                {"on", "1"},
+                {"true", " Yes "},
+                {"off", "0"},
+                {"No", "false"},
+        };
+
+        for (String[] pair : pairs) {
+            environment.clear();
+            environment.put("TRACE_USAGE_REPORTING", pair[0]);
+            environment.put("DO_NOT_TRACK", pair[1]);
+
+            // Act
+            TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+
+            // Assert
+            assertEquals(TraceClient.REASON_ENVIRONMENT, client.disabledReason(),
+                    "TRACE_USAGE_REPORTING=" + pair[0] + ", DO_NOT_TRACK=" + pair[1]);
+            assertFalse(client.isEnabled());
+        }
+    }
+
+    @Test
+    void environment_valuesThatAreNotAnOptOutLeaveReportingOn() {
+        // Only the listed spellings opt out: a blank value, the opposite
+        // word, or anything else is not read as a wish to stop reporting.
+        for (String value : new String[] {"", "   ", "on", "true", "yes", "1", "disabled", "offline"}) {
+            // Arrange
+            environment.clear();
+            environment.put("TRACE_USAGE_REPORTING", value);
+
+            // Act
+            TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+
+            // Assert
+            assertNull(client.disabledReason(), "TRACE_USAGE_REPORTING=\"" + value + "\"");
+            client.close();
+        }
+        for (String value : new String[] {"", "   ", "0", "false", "no", "off", "2", "y"}) {
+            // Arrange
+            environment.clear();
+            environment.put("DO_NOT_TRACK", value);
+
+            // Act
+            TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
+
+            // Assert
+            assertNull(client.disabledReason(), "DO_NOT_TRACK=\"" + value + "\"");
+            client.close();
+        }
+    }
+
+    @Test
+    void disabled_isOffForTheConfigReasonUnlessTheEnvironmentSaysSoFirst() {
+        // Act
+        TraceClient byDefault = TraceClient.disabled();
+
+        // Assert
+        assertFalse(byDefault.isEnabled());
+        assertEquals(TraceClient.REASON_CONFIG, byDefault.disabledReason());
+        assertNull(byDefault.installId(), "a disabled client has no install ID");
+
+        // Arrange: the environment is checked before the client's own switch,
+        // so it is the reason even here.
+        environment.put("DO_NOT_TRACK", "1");
+
+        // Act
+        TraceClient byEnvironment = TraceClient.disabled();
+
+        // Assert
+        assertFalse(byEnvironment.isEnabled());
+        assertEquals(TraceClient.REASON_ENVIRONMENT, byEnvironment.disabledReason());
+        byDefault.close();
+        byEnvironment.close();
+    }
+
+    @Test
     void disabledReason_followsThePrecedenceEnvironmentThenServerWideThenConfigThenKey(@TempDir Path plugins) throws Exception {
         // Arrange: everything says off at once.
         Path file = plugins.resolve("trace").resolve("config.yml");
