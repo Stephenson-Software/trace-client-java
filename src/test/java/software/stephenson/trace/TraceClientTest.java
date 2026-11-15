@@ -1780,6 +1780,21 @@ class TraceClientTest {
     }
 
     @Test
+    void installId_theServerIdLineNeedsNoSpaceAroundItsColonAndIsCaseSensitive() {
+        // Unlike a tags: entry, where "a:b" is a string and not a pair, the
+        // server-id: line takes its value straight after the colon, and
+        // allows space before the colon.
+        assertEquals("abc", TraceClient.parseServerWideConfig(Arrays.asList("server-id:abc")).serverId);
+        assertEquals("abc", TraceClient.parseServerWideConfig(Arrays.asList("server-id  :  abc")).serverId);
+        assertEquals("abc", TraceClient.parseServerWideConfig(Arrays.asList("server-id:\tabc\t")).serverId);
+
+        // The name itself is matched exactly.
+        assertNull(TraceClient.parseServerWideConfig(Arrays.asList("Server-Id: abc")).serverId);
+        assertNull(TraceClient.parseServerWideConfig(Arrays.asList("server_id: abc")).serverId);
+        assertNull(TraceClient.parseServerWideConfig(Arrays.asList("server-ids: abc")).serverId);
+    }
+
+    @Test
     void installId_unwritableConfigFallsBackToAnInMemoryIdWithoutThrowing(@TempDir Path scratch) throws Exception {
         // Arrange: a "plugins directory" that is a regular file, so nothing
         // under it can be created (permission bits are no use as root).
@@ -2142,6 +2157,34 @@ class TraceClientTest {
         try (java.util.stream.Stream<Path> entries = Files.list(directory)) {
             assertEquals(0, entries.count());
         }
+    }
+
+    @Test
+    void installIdFile_aFileThatIsNotUtf8IsLeftAloneAndAnInMemoryIdIsUsed(@TempDir Path scratch) throws Exception {
+        // Arrange
+        // An ID line below a comment saved in ISO-8859-1: the 0xE9 byte is
+        // not UTF-8, so the whole file fails to read, valid line and all.
+        Path file = scratch.resolve("trace-install-id");
+        byte[] content = "# café\nmy-own-id\n".getBytes(StandardCharsets.ISO_8859_1);
+        Files.write(file, content);
+        RecordingHandler log = new RecordingHandler();
+        Logger logger = Logger.getLogger("TraceClientTest.installIdFileNotUtf8");
+        logger.setLevel(Level.ALL);
+        logger.addHandler(log);
+
+        // Act
+        TraceClient client = assertDoesNotThrow(() -> TraceClient.builder(baseUrl(), "MyCli", "1.2.3").key("k")
+                .installIdFile(file.toFile()).logger(logger).build());
+        client.close();
+
+        // Assert
+        assertTrue(client.isEnabled());
+        assertTrue(client.installId().matches(UUID_PATTERN), client.installId());
+        assertArrayEquals(content, Files.readAllBytes(file), "a file that cannot be read is never overwritten");
+        assertNotEquals(client.installId(), TraceClient.installIdFromFile(file.toFile()), "in memory: a new one each process");
+        assertTrue(log.await(1, TimeUnit.SECONDS), "the fallback should be mentioned at FINE");
+        assertEquals(Level.FINE, log.records.get(0).getLevel());
+        assertTrue(log.records.get(0).getMessage().contains("could not read install ID file"), log.records.get(0).getMessage());
     }
 
     @Test
