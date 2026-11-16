@@ -808,6 +808,83 @@ class TraceClientTest {
         client.close();
     }
 
+    /** What reached a server, as bytes, with the two headers that say how to read them. */
+    private static final class RawRequest {
+        final byte[] body;
+        final String contentType;
+        final String contentLength;
+
+        RawRequest(byte[] body, String contentType, String contentLength) {
+            this.body = body;
+            this.contentType = contentType;
+            this.contentLength = contentLength;
+        }
+    }
+
+    /** Reports {@code name} with {@code tags} to a server of its own and returns the one request it received. */
+    private static RawRequest reportAndCaptureRawRequest(String name, Map<String, String> tags) throws Exception {
+        List<RawRequest> raw = new CopyOnWriteArrayList<>();
+        CountDownLatch got = new CountDownLatch(1);
+        HttpServer capturing = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        capturing.createContext("/", exchange -> {
+            raw.add(new RawRequest(readAll(exchange.getRequestBody()),
+                    exchange.getRequestHeaders().getFirst("Content-Type"),
+                    exchange.getRequestHeaders().getFirst("Content-Length")));
+            exchange.sendResponseHeaders(201, -1);
+            exchange.close();
+            got.countDown();
+        });
+        capturing.start();
+        try {
+            TraceClient client = TraceClient.builder("http://127.0.0.1:" + capturing.getAddress().getPort(), "MyPlugin", "1.2.3")
+                    .key("k").build();
+            client.report(name, null, tags);
+            assertTrue(got.await(5, TimeUnit.SECONDS), "the report should reach the server");
+            client.close();
+            return raw.get(0);
+        } finally {
+            capturing.stop(0);
+        }
+    }
+
+    @Test
+    void report_sendsNonAsciiTextAsUtf8WithALengthCountedInBytes() throws Exception {
+        // Arrange
+        // A two-byte, a three-byte and a four-byte (surrogate pair) character.
+        // The body is streamed with a fixed length: counted in chars rather
+        // than bytes, every such report would fail to send.
+        Map<String, String> tags = Collections.singletonMap("place", "€ 🏠");
+        String expected = "{\"application\":\"MyPlugin\",\"name\":\"démarrage\","
+                + "\"tags\":{\"place\":\"€ 🏠\",\"version\":\"1.2.3\"}}";
+
+        // Act
+        RawRequest request = reportAndCaptureRawRequest("démarrage", tags);
+
+        // Assert
+        assertArrayEquals(expected.getBytes(StandardCharsets.UTF_8), request.body, "the body is the JSON in UTF-8");
+        assertTrue(request.body.length > expected.length(), "the multi-byte characters must have been sent as such");
+        assertEquals(String.valueOf(request.body.length), request.contentLength, "the length is counted in bytes");
+        assertEquals("application/json; charset=utf-8", request.contentType);
+    }
+
+    @Test
+    void report_aLoneSurrogateIsSentAsAQuestionMarkRatherThanDroppingTheReport() throws Exception {
+        // Arrange
+        // Half of a surrogate pair is not text UTF-8 can encode. quote()
+        // passes it through, and String.getBytes(UTF_8) then writes its
+        // replacement byte -- so the report still goes out, with '?' there.
+        Map<String, String> tags = Collections.singletonMap("broken", "a\uD83Cb");
+
+        // Act
+        RawRequest request = reportAndCaptureRawRequest("command", tags);
+
+        // Assert
+        assertEquals("{\"application\":\"MyPlugin\",\"name\":\"command\","
+                        + "\"tags\":{\"broken\":\"a?b\",\"version\":\"1.2.3\"}}",
+                new String(request.body, StandardCharsets.UTF_8));
+        assertEquals(String.valueOf(request.body.length), request.contentLength);
+    }
+
     @Test
     void report_logsASuccessStatusOtherThan201() throws Exception {
         // Arrange
