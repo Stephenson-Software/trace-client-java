@@ -487,24 +487,25 @@ class TraceClientTest {
     }
 
     @Test
-    void serverWideConfig_theFirstEnabledLineIsTheSwitch() {
-        assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled: true", "enabled: false")).disables);
-        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled: false", "enabled: true")).disables);
+    void serverWideConfig_anyEnabledLineThatIsNotOnDisables() {
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled: true", "enabled: false")).disables,
+                "a later off wins over an earlier on");
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled: false", "enabled: true")).disables,
+                "and an earlier off wins over a later on");
+        assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled: true", "enabled: yes")).disables);
         assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("# enabled: true", "enabled: false")).disables,
-                "a commented-out line is not the first one");
+                "a commented-out line is not a switch");
     }
 
     @Test
-    void serverWideConfig_aValuelessEnabledLineIsSkippedButACommentOnlyOneIsTheSwitch() {
-        // Characterizes current behaviour, which issue #27 questions:
-        // ENABLED_LINE needs a non-blank value, so a bare "enabled:" is
-        // passed over and a later line is the switch; but after
-        // "enabled: # ..." the captured value is "#", which is not off, so
-        // that line is the switch and a later one is ignored.
-        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled:", "enabled: false")).disables);
-        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled:   ", "enabled: false")).disables);
-        assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled: # set below", "enabled: false")).disables);
-        assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled:")).disables, "a bare enabled: alone is enabled");
+    void serverWideConfig_aValuelessEnabledLineDisables() {
+        // Fails closed (issue #27): an enabled: line with no value, or only a
+        // comment, does not clearly mean "on", so it turns reporting off.
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled:")).disables);
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled:   ")).disables);
+        assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled: # set below", "enabled: true")).disables);
+        assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled: true # on")).disables,
+                "a trailing comment after a value is not part of it");
     }
 
     @Test
@@ -1125,16 +1126,17 @@ class TraceClientTest {
     }
 
     @Test
-    void serverWideConfig_acceptsEverySpellingOfOff(@TempDir Path plugins) throws Exception {
+    void serverWideConfig_onlyClearSpellingsOfOnLeaveReportingOn(@TempDir Path plugins) throws Exception {
         Path file = plugins.resolve("trace").resolve("config.yml");
         Files.createDirectories(file.getParent());
-        for (String off : new String[] {"false", "no", "0", "off", "OFF", "No"}) {
+        for (String off : new String[] {"false", "no", "0", "off", "OFF", "No", "\"false\"", "'off'",
+                "flase", "disabled", "anything-else"}) {
             Files.write(file, ("enabled: " + off + "\n").getBytes(StandardCharsets.UTF_8));
             assertEquals(TraceClient.REASON_SERVER_WIDE,
                     TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").serverWideConfig(plugins.toFile()).build().disabledReason(),
                     "enabled: " + off + " should disable");
         }
-        for (String on : new String[] {"true", "yes", "1", "on", "anything-else"}) {
+        for (String on : new String[] {"true", "yes", "1", "on", "ON", "\"true\""}) {
             Files.write(file, ("enabled: " + on + "\n").getBytes(StandardCharsets.UTF_8));
             assertNull(TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").serverWideConfig(plugins.toFile()).build().disabledReason(),
                     "enabled: " + on + " should not disable");
@@ -1153,40 +1155,71 @@ class TraceClientTest {
     }
 
     @Test
-    void serverWideConfig_aQuotedFalseDoesNotDisableYet() {
-        // Characterizes current behaviour, which issue #15 questions: the
-        // enabled: value is compared with its quotes on, unlike tag values
-        // and server-id:, so a quoted spelling of off leaves reporting on.
+    void serverWideConfig_aQuotedOffDisables() {
+        // Issue #15: the value used to be compared with its quotes on.
         for (String quoted : new String[] {"\"false\"", "'false'", "\"off\"", "'no'"}) {
-            assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled: " + quoted)).disables,
+            assertTrue(TraceClient.parseServerWideConfig(Arrays.asList("enabled: " + quoted)).disables,
                     "enabled: " + quoted);
+        }
+        assertFalse(TraceClient.parseServerWideConfig(Arrays.asList("enabled: \"true\"")).disables);
+    }
+
+    @Test
+    void environment_thatCannotBeReadOptsOut() {
+        java.util.function.Function<String, String> saved = TraceClient.environment;
+        TraceClient.environment = name -> { throw new SecurityException("getenv." + name); };
+        try {
+            TraceClient client = assertDoesNotThrow(() -> TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build());
+            assertEquals(TraceClient.REASON_ENVIRONMENT, client.disabledReason());
+            assertDoesNotThrow(() -> TraceClient.disabled());
+        } finally {
+            TraceClient.environment = saved;
         }
     }
 
     @Test
-    void serverWideConfig_aByteThatIsNotUtf8LeavesReportingOnYet(@TempDir Path plugins) throws Exception {
-        // Characterizes current behaviour, which issue #40 questions: one
-        // byte of another encoding fails the whole read, which counts as an
-        // IO failure, so the enabled: false below it is never seen.
-        // Arrange
+    void allowsReporting_failsClosed() {
+        assertTrue(TraceClient.allowsReporting(true));
+        assertTrue(TraceClient.allowsReporting("true"));
+        assertTrue(TraceClient.allowsReporting(" ON "));
+        assertTrue(TraceClient.allowsReporting("yes"));
+        assertTrue(TraceClient.allowsReporting("1"));
+        assertFalse(TraceClient.allowsReporting(false));
+        assertFalse(TraceClient.allowsReporting("false"));
+        assertFalse(TraceClient.allowsReporting("off"));
+        assertFalse(TraceClient.allowsReporting("flase"));
+        assertFalse(TraceClient.allowsReporting(""));
+        assertFalse(TraceClient.allowsReporting(1));
+        assertFalse(TraceClient.allowsReporting(null));
+    }
+
+    @Test
+    void serverWideConfig_aFileThatIsNotUtf8IsStillObeyed(@TempDir Path plugins) throws Exception {
+        // Issue #40: one byte of another encoding used to fail the whole read,
+        // so the enabled: false below it was never seen.
         Path file = plugins.resolve("trace").resolve("config.yml");
         Files.createDirectories(file.getParent());
-        Files.write(file, "# café\nenabled: false\n".getBytes(StandardCharsets.ISO_8859_1));
-        RecordingHandler log = new RecordingHandler();
-        Logger logger = Logger.getLogger("TraceClientTest.serverWideNotUtf8");
-        logger.setLevel(Level.ALL);
-        logger.addHandler(log);
+        byte[] latin1 = "# café\nenabled: false\n".getBytes(StandardCharsets.ISO_8859_1);
+        Files.write(file, latin1);
 
-        // Act
         TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
-                .serverWideConfig(plugins.toFile()).logger(logger).build();
+                .serverWideConfig(plugins.toFile()).build();
 
-        // Assert
-        assertTrue(client.isEnabled(), "the switch was not read");
-        assertTrue(log.await(1, TimeUnit.SECONDS), "the failure should be mentioned at FINE");
-        assertTrue(log.records.get(0).getMessage().contains("could not read server-wide config"),
-                log.records.get(0).getMessage());
+        assertEquals(TraceClient.REASON_SERVER_WIDE, client.disabledReason());
+        assertArrayEquals(latin1, Files.readAllBytes(file), "the file is left as it is");
         client.close();
+    }
+
+    @Test
+    void serverWideConfig_aFileThatIsThereButUnreadableDisables(@TempDir Path plugins) throws Exception {
+        // A directory where the file should be cannot be read, and may be
+        // hiding an opt-out: reporting stays off.
+        Files.createDirectories(plugins.resolve("trace").resolve("config.yml"));
+
+        TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k")
+                .serverWideConfig(plugins.toFile()).build();
+
+        assertEquals(TraceClient.REASON_SERVER_WIDE, client.disabledReason());
     }
 
     @Test
@@ -1269,32 +1302,36 @@ class TraceClientTest {
     }
 
     @Test
-    void environment_valuesThatAreNotAnOptOutLeaveReportingOn() {
-        // Only the listed spellings opt out: a blank value, the opposite
-        // word, or anything else is not read as a wish to stop reporting.
-        for (String value : new String[] {"", "   ", "on", "true", "yes", "1", "disabled", "offline"}) {
-            // Arrange
+    void environment_onlyBlankOrAClearOnLeavesReportingOn() {
+        // Fails closed: once a variable is set to anything but blank, only a
+        // value that clearly means "keep reporting" leaves it on.
+        for (String value : new String[] {"", "   ", "on", "true", "yes", "1", "TRUE"}) {
             environment.clear();
             environment.put("TRACE_USAGE_REPORTING", value);
-
-            // Act
             TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
-
-            // Assert
             assertNull(client.disabledReason(), "TRACE_USAGE_REPORTING=\"" + value + "\"");
             client.close();
         }
-        for (String value : new String[] {"", "   ", "0", "false", "no", "off", "2", "y"}) {
-            // Arrange
+        for (String value : new String[] {"disabled", "offline", "nope", "2"}) {
+            environment.clear();
+            environment.put("TRACE_USAGE_REPORTING", value);
+            assertEquals(TraceClient.REASON_ENVIRONMENT,
+                    TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build().disabledReason(),
+                    "TRACE_USAGE_REPORTING=\"" + value + "\"");
+        }
+        for (String value : new String[] {"", "   ", "0", "false", "no", "off"}) {
             environment.clear();
             environment.put("DO_NOT_TRACK", value);
-
-            // Act
             TraceClient client = TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build();
-
-            // Assert
             assertNull(client.disabledReason(), "DO_NOT_TRACK=\"" + value + "\"");
             client.close();
+        }
+        for (String value : new String[] {"2", "y", "please"}) {
+            environment.clear();
+            environment.put("DO_NOT_TRACK", value);
+            assertEquals(TraceClient.REASON_ENVIRONMENT,
+                    TraceClient.builder(baseUrl(), "MyPlugin", "1.2.3").key("k").build().disabledReason(),
+                    "DO_NOT_TRACK=\"" + value + "\"");
         }
     }
 
@@ -1675,8 +1712,8 @@ class TraceClientTest {
         byte[] notUtf8 = Files.readAllBytes(file);
         String body = reportedBody(plugins, "startup", null);
         assertTrue(body.matches("\\{\"application\":\"MyPlugin\",\"name\":\"startup\",\"tags\":"
-                        + "\\{\"version\":\"1\\.2\\.3\",\"install\":\"" + UUID_PATTERN + "\"}}"),
-                "a file that is not UTF-8 counts as enabled with no tags, and an in-memory install ID: " + body);
+                        + "\\{\"version\":\"1\\.2\\.3\",\"install\":\"" + UUID_PATTERN + "\",\"ci\":\"\u00c3\\(\"}}"),
+                "a file that is not UTF-8 is read as ISO-8859-1, with an in-memory install ID: " + body);
         assertArrayEquals(notUtf8, Files.readAllBytes(file), "a file that cannot be read is never appended to");
     }
 
@@ -1947,7 +1984,7 @@ class TraceClientTest {
         // Assert: both happen on the building thread, so they are already logged.
         assertEquals(2, log.records.size(), log.records.toString());
         assertEquals(Level.FINE, log.records.get(0).getLevel());
-        assertTrue(log.records.get(0).getMessage().startsWith("[trace] could not read server-wide config "),
+        assertTrue(log.records.get(0).getMessage().startsWith("[trace] could not create server-wide config "),
                 log.records.get(0).getMessage());
         assertEquals(Level.FINE, log.records.get(1).getLevel());
         assertEquals("[trace] using an in-memory server-id for this process: server-wide config was not readable",

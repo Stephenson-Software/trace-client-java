@@ -11,7 +11,7 @@ program side is meant to stay one call.
 TraceClient trace = TraceClient.builder("https://trace.danielstephenson.dev", "MyPlugin",
                 getDescription().getVersion())
         .key(config.getString("usage-reporting.key"))
-        .enabled(config.getBoolean("usage-reporting.enabled", true))
+        .enabled(TraceClient.allowsReporting(config.get("usage-reporting.enabled")))
         .serverWideConfig(getDataFolder().getParentFile()) // plugins/ -- Bukkit plugins only
         .logger(getLogger())
         .build();
@@ -99,7 +99,7 @@ chooses it; there is no default location:
 
 ```java
 TraceClient trace = TraceClient.builder(url, "mycli", version).key(key)
-        .enabled(settings.usageReportingEnabled())
+        .enabled(TraceClient.allowsReporting(settings.usageReportingEnabled()))
         .installIdFile(new File(dataDir, "trace-install-id")) // e.g. ~/.local/share/mycli/
         .build();
 ```
@@ -191,14 +191,16 @@ finer than that anyway.
 ## Opting out
 
 Reporting is **opt-out**, and the person running the program always has the
-last word. `build()` checks these in order; the first match wins and is what
+last word. **Every switch fails closed:** a value that does not clearly mean
+"on" — a typo, a quoted `"false"`, an empty value — turns reporting off, and
+nothing in this client ever turns a switch back on. `build()` checks these in order; the first match wins and is what
 `disabledReason()` returns, verbatim, so the program can log it:
 
 | Switch | `disabledReason()` |
 |---|---|
-| Environment: `TRACE_USAGE_REPORTING=off` (or `false`, `0`, `no`) or `DO_NOT_TRACK=1` (or `true`, `yes`), case-insensitive. Always checked. | `environment` |
-| Server-wide, when `serverWideConfig(pluginsDirectory)` was given: `enabled: false` in `plugins/trace/config.yml`. `build()` creates the file with `enabled: true` (and a commented-out [`tags:`](#server-wide-tags) example) if it is missing; afterwards the only change it ever makes is appending a [`server-id:`](#every-event-carries-a-random-server-id) line when an enabled client finds none. When the environment has already opted out, the file is neither read nor created. It is read with a line regex, no YAML library. An IO failure is logged at `FINE` and counts as enabled. | `server-wide config: plugins/trace/config.yml` |
-| The program's own setting: `enabled(false)`. | `config.yml` |
+| Environment, case-insensitive, always checked: `TRACE_USAGE_REPORTING` set to anything but blank, `true`, `on`, `yes` or `1` (so `off`, `false`, `0`, `no`, `disabled`, …); or `DO_NOT_TRACK` set to anything but blank, `0`, `false`, `off` or `no` (so `1`, `true`, `yes`, …). An environment that cannot be read (e.g. a `SecurityManager` denying `getenv`) counts as opting out. | `environment` |
+| Server-wide, when `serverWideConfig(pluginsDirectory)` was given: any `enabled:` line in `plugins/trace/config.yml` whose value, bare or quoted, is not `true`, `on`, `yes` or `1` — `enabled: false`, `enabled: "off"`, `enabled: no`, an empty `enabled:`, a typo. With several `enabled:` lines, any one that is not on turns reporting off. `build()` creates the file with `enabled: true` (and a commented-out [`tags:`](#server-wide-tags) example) if it is missing; afterwards the only change it ever makes is appending a [`server-id:`](#every-event-carries-a-random-server-id) line when an enabled client finds none. When the environment has already opted out, the file is neither read nor created. It is read with a line regex, no YAML library. A file that is not UTF-8 is read as ISO-8859-1 (and not appended to). A file that is there but cannot be read counts as **disabled** — it may say `enabled: false`; a file that is missing and cannot be created counts as enabled, since the operator has said nothing. Failures are logged at `FINE`. | `server-wide config: plugins/trace/config.yml` |
+| The program's own setting: `enabled(false)`. Read it with `TraceClient.allowsReporting(value)`, which fails closed the same way: only `true`, or a string `true`/`on`/`yes`/`1`, allows reporting. On Bukkit pass `getConfig().get(path)`, not `getBoolean(path, true)` — `getBoolean` returns its default for a quoted `"false"`. | `config.yml` |
 | No key, or a blank one. | `no key` |
 
 `disabledReason()` is `null` when the client is enabled. A disabled client does
@@ -262,7 +264,7 @@ plugins already vendor bStats' `Metrics.java`.
 <dependency>
     <groupId>com.github.Stephenson-Software</groupId>
     <artifactId>trace-client-java</artifactId>
-    <version>0.7.0</version>
+    <version>0.8.0</version>
 </dependency>
 ```
 
