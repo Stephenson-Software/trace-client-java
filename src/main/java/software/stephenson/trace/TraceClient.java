@@ -190,9 +190,17 @@ public final class TraceClient {
     /** Reason reported when no key was given. */
     public static final String REASON_NO_KEY = "no key";
 
-    /** Environment variable that turns reporting off: {@code off}, {@code false}, {@code 0}, {@code no}. */
+    /**
+     * Environment variable that turns reporting off when set to anything but
+     * blank, {@code true}, {@code on}, {@code yes} or {@code 1} (any case):
+     * {@code off}, {@code false}, {@code 0}, {@code no}, a typo.
+     */
     public static final String ENV_USAGE_REPORTING = "TRACE_USAGE_REPORTING";
-    /** Environment variable that turns reporting off: {@code 1}, {@code true}, {@code yes}. See https://consoledonottrack.com. */
+    /**
+     * Environment variable that turns reporting off when set to anything but
+     * blank, {@code 0}, {@code false}, {@code off} or {@code no} (any case):
+     * {@code 1}, {@code true}, {@code yes}, a typo. See https://consoledonottrack.com.
+     */
     public static final String ENV_DO_NOT_TRACK = "DO_NOT_TRACK";
 
     /** The server-wide switch, relative to the plugins directory. */
@@ -530,7 +538,11 @@ public final class TraceClient {
 
     /** What {@code plugins/trace/config.yml} says: the switch, the server-wide tags and the server-id. */
     static final class ServerWideConfig {
-        /** No file was read: none was asked for, or it could not be read. */
+        /**
+         * No file was read: none was asked for, the environment opted out
+         * first, or none was there and none could be made. (One that is
+         * there but cannot be read is {@link #UNREADABLE}.)
+         */
         static final ServerWideConfig NONE = new ServerWideConfig(false, Collections.<String, String>emptyMap(), null);
         /** The file is there but could not be read: whatever it says, it may say off. */
         static final ServerWideConfig UNREADABLE = new ServerWideConfig(true, Collections.<String, String>emptyMap(), null);
@@ -1215,9 +1227,11 @@ public final class TraceClient {
          * Given the plugins directory ({@code getDataFolder().getParentFile()}
          * in a Bukkit plugin), {@link #build()} makes sure
          * {@code plugins/trace/config.yml} exists -- creating it with
-         * {@code enabled: true} if it is missing -- and honours
-         * {@code enabled: false} (or {@code off}, {@code 0}, {@code no},
-         * case-insensitive) in it. Its optional {@code tags:} block is
+         * {@code enabled: true} if it is missing -- and fails closed on it:
+         * any {@code enabled:} line whose value, bare or quoted, is not
+         * {@code true}, {@code on}, {@code yes} or {@code 1}
+         * (case-insensitive) turns reporting off, and so does a file that is
+         * there but cannot be read. Its optional {@code tags:} block is
          * added to every event this client reports, below the event's own
          * tags. Its {@code server-id:} line is sent as the tag
          * {@code install}; when an enabled client finds none, it appends one
