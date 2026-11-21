@@ -308,6 +308,10 @@ mvn verify
 Tests run the client against the JDK's own `HttpServer` on a loopback port —
 no more dependencies than the client itself. CI runs them on Java 8, 17 and 21.
 
+The install-ID files in `src/test/resources/install-id-fixtures` and the
+`loaded`/`kept` lines of its `expected.txt` are frozen once released: never edit
+or delete one. A new case is a new fixture plus its `expected.txt` line.
+
 ## License
 
 MIT.
